@@ -9,13 +9,16 @@
     "build": "node scripts/build.mjs",
     "manifest": "node scripts/manifest.mjs",
     "all": "npm run validate && npm run build && npm run manifest",
-    "demo": "node client/demo.mjs"
+    "demo": "node client/demo.mjs",
+    "mcp:server": "node client/mcp-server.mjs",
+    "mcp:test": "node client/test-mcp.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",
     "yaml": "^2.6.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "just-bash": "^2.14.2"
   }
 }

@@ -64,7 +64,61 @@ export default async function handler(input, ctx) {
 Every handler receives a curated `ctx` (`fetch` gated by the tool's
 `networkPolicy`, scoped `env`, `log`). The loader is the trust boundary.
 
+## MCP server
+
+`client/mcp-server.mjs` is a stdio Model Context Protocol server that exposes
+the registry to any MCP-compatible host (Claude Code, Cursor, Continue, etc).
+
+It exposes **two** tools, not N:
+
+- `bash` — run any bash command in a `just-bash` sandbox where every registry
+  tool is callable as a unix command, alongside `jq`, `grep`, `awk`, `xargs`,
+  `sed`, etc.
+- `tool_schema` — returns the JSONSchema + metadata for any registry tool, so
+  the agent can introspect on demand instead of paying for N tool definitions
+  upfront.
+
+The thesis: composing tools through unix pipes is dramatically more
+token-efficient than discrete function calls, because intermediate values
+never cross the model boundary. Example pipeline run via a single MCP tool
+call:
+
+```bash
+ip-info | jq -r '.country' | xargs -I {} echo-pretty --text "{}" --upper --prefix "country=> "
+# → {"text":"country=> MX","length":12}
+```
+
+### Add to Claude Code
+
+`~/.claude/mcp.json` (or per-project `.claude/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "agentic-tools": {
+      "command": "node",
+      "args": ["<absolute path to repo>/client/mcp-server.mjs"]
+    }
+  }
+}
+```
+
+To pin a specific registry version, add an env var:
+
+```json
+"env": { "REGISTRY": "https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@v0.1.0/dist" }
+```
+
+### Local testing
+
+```bash
+npm run mcp:test   # spawns the server + drives it as an MCP client
+```
+
 ## Status
 
-Phase 1 (this repo): trusted in-process execution via dynamic `import()`.
-Phase 2 (future): sandboxed execution via just-bash's `js-exec` (QuickJS).
+- ✅ Phase 1: trusted in-process execution via dynamic `import()` (current).
+- ✅ MCP server with `bash` + `tool_schema` (current).
+- ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
+  community-contributed tools.
+- ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.
