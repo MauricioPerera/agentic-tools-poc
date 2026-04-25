@@ -7,17 +7,12 @@
  * @param {{ fetch: typeof fetch, log: (msg: string) => void }} ctx
  */
 export default async function handler(input, ctx) {
-  const target = input.ip ? encodeURIComponent(input.ip) + '/' : '';
-  const url = `https://ipapi.co/${target}json/`;
-  ctx.log(`ip-info: GET ${url}`);
+  const url = input.ip
+    ? `https://api.country.is/${encodeURIComponent(input.ip)}`
+    : `https://api.country.is/`;
+  ctx.log(`GET ${url}`);
   const res = await ctx.fetch(url);
-  if (!res.ok) throw new Error(`ipapi.co returned ${res.status}`);
+  if (!res.ok) throw new Error(`country.is returned ${res.status}`);
   const data = await res.json();
-  return {
-    ip:       data.ip,
-    country:  data.country_name,
-    city:     data.city,
-    org:      data.org,
-    timezone: data.timezone,
-  };
+  return { ip: data.ip, country: data.country };
 }

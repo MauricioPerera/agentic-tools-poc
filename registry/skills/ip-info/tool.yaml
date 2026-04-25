@@ -1,7 +1,7 @@
 slug: ip-info
 name: IP Info
-summary: Returns public IP information (country, ISP, timezone) using ipapi.co
-version: 1.0.0
+summary: Returns public IP and country code via api.country.is
+version: 1.0.1
 capabilities: [network, lookup]
 sideEffects: read
 inputSchema:
@@ -13,10 +13,7 @@ inputSchema:
 outputSchema:
   type: object
   properties:
-    ip:       { type: string }
-    country:  { type: string }
-    city:     { type: string }
-    org:      { type: string }
-    timezone: { type: string }
+    ip:      { type: string }
+    country: { type: string, description: "ISO 3166-1 alpha-2 country code" }
 networkPolicy:
-  allow: [ipapi.co]
+  allow: [api.country.is]

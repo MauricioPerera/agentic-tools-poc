@@ -1,7 +1,7 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-25T19:41:15.707Z",
-  "commit": null,
+  "generatedAt": "2026-04-25T19:48:47.238Z",
+  "commit": "835f0c306e02d19874e729f2eb95534b15babbe7",
   "tools": [
     {
       "slug": "echo-pretty",
@@ -60,8 +60,8 @@
     {
       "slug": "ip-info",
       "name": "IP Info",
-      "summary": "Returns public IP information (country, ISP, timezone) using ipapi.co",
-      "version": "1.0.0",
+      "summary": "Returns public IP and country code via api.country.is",
+      "version": "1.0.1",
       "capabilities": [
         "network",
         "lookup"
@@ -83,23 +83,15 @@
             "type": "string"
           },
           "country": {
-            "type": "string"
-          },
-          "city": {
-            "type": "string"
-          },
-          "org": {
-            "type": "string"
-          },
-          "timezone": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2 country code"
           }
         }
       },
       "requiredEnv": [],
       "networkPolicy": {
         "allow": [
-          "ipapi.co"
+          "api.country.is"
         ]
       },
       "source": "skills/ip-info.mjs"
