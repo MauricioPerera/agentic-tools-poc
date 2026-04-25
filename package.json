@@ -12,7 +12,10 @@
     "demo": "node client/demo.mjs",
     "mcp:server": "node client/mcp-server.mjs",
     "mcp:test": "node client/test-mcp.mjs",
+    "mcp:classic": "node client/mcp-server-classic.mjs",
+    "mcp:classic:test": "node client/test-mcp-classic.mjs",
     "agent:granite": "node client/agent-granite.mjs",
+    "compare": "node client/compare.mjs",
     "exec": "node client/exec-bash.mjs"
   },
   "devDependencies": {

@@ -205,11 +205,83 @@ CF_ACCOUNT_ID=<your-account-id> CF_API_TOKEN=<token-with-Workers-AI-scope> \
   node client/agent-granite.mjs "convert 'agentic tools poc' to uppercase"
 ```
 
+## Composable vs classic — A/B benchmark with Granite 4.0 H Micro
+
+Two MCP servers ship in this repo so you can compare them on the same model:
+
+- `client/mcp-server.mjs` — **composable**: one `bash` tool, registry tools
+  available as commands inside it. Compose via unix pipes.
+- `client/mcp-server-classic.mjs` — **classic**: each registry tool exposed
+  as its own MCP function with its own JSONSchema (traditional
+  function-calling shape).
+
+Both wrap the same registry; the only variable is the surface the model
+sees. Run the live benchmark with:
+
+```bash
+CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
+```
+
+### Results (Granite 4.0 H Micro, 3 queries)
+
+| Query | Mode | Rounds | Tokens | Correct |
+|---|---|---:|---:|:---:|
+| Q1 — *Convert 'agentic tools poc' to uppercase* | composable | 2 | 677 | ✅ |
+| Q1 | classic | 2 | 755 | ✅ |
+| Q2 — *What ISO country code am I in?* | composable | 2 | 662 | ✅ |
+| Q2 | classic | 2 | 667 | ✅ |
+| Q3 — *Get country code, echo uppercased with prefix* | composable | **5** | **2440** | ✅ |
+| Q3 | classic | **3** | **1229** | ✅ |
+| **Totals** | composable | **9** | **3779** | 3/3 |
+| **Totals** | classic | **7** | **2651** | 3/3 |
+
+Classic won by **~30% in tokens and ~22% in rounds** on this 3-query suite.
+Both modes converged to correct answers.
+
+### Why classic outperformed composable on a small model
+
+Q3 is the revealing case. In composable mode Granite:
+
+1. Hallucinated a `curl https://api.country.io/...` (round 1) — `curl` isn't
+   in the just-bash sandbox. Diagnostic kicked in.
+2. Pivoted to `ip-info | jq -r '.country'` (round 2). Got `MX`.
+3. Tried `echo-pretty --upper --prefix "MX"` — missing required `--text`
+   (round 3). Schema check caught it.
+4. Tried `echo-pretty --upper --text "MX"` — but dropped `--prefix` this
+   time (round 4). Got `{"text":"MX","length":2}`.
+5. Assembled the answer manually in the final response (round 5).
+
+In classic mode, the model just called `ip-info` then `echo-pretty` with
+all required structured args validated by the JSONSchema gateway. No
+hallucination, no missing flags, 3 rounds.
+
+**The lesson**: composable wins on token theory (intermediate values
+shouldn't cross the model boundary) only if the model can reliably
+*compose*. A 3.4B model can't always; a frontier model can. JSONSchema
+function-calling protects small models from the syntactic cliffs of bash.
+
+### Practical recommendation
+
+| Model class | Recommended mode |
+|---|---|
+| Small open-weights (≤ 8B) | **classic** — JSONSchema validation acts as safety net |
+| Mid-tier (8B–70B) | A/B both for your domain — depends on query mix |
+| Frontier (Claude, GPT-4o) | **composable** — wins via pipe composition |
+
+The repo lets you flip with zero code changes: just point your MCP host
+at `mcp-server.mjs` (composable) or `mcp-server-classic.mjs` (classic),
+or both side-by-side under different names.
+
 ## Status
 
-- ✅ Phase 1: trusted in-process execution via dynamic `import()` (current).
-- ✅ MCP server with `bash` + `tool_schema` (current).
-- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro (current).
+- ✅ Phase 1: trusted in-process execution via dynamic `import()`.
+- ✅ MCP server (composable) with `bash` + `tool_schema`.
+- ✅ MCP server (classic) with one tool per registry entry.
+- ✅ Smart-bash observation contract (schema + diagnostics + jq_paths).
+- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro.
+- ✅ Composable vs classic A/B benchmark.
 - ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
   community-contributed tools.
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.
+- ⏭ Re-run benchmark on Llama 3.1 8B / Qwen 2.5 Coder 32B for the
+  middle-tier crossover point.
