@@ -1,0 +1,21 @@
+{
+  "name": "agentic-tools-poc",
+  "version": "0.1.0",
+  "description": "POC: GitHub-stored TS tools + just-bash runtime + jsDelivr distribution",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "build": "node scripts/build.mjs",
+    "manifest": "node scripts/manifest.mjs",
+    "all": "npm run validate && npm run build && npm run manifest",
+    "demo": "node client/demo.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "yaml": "^2.6.0"
+  },
+  "dependencies": {
+    "just-bash": "^2.14.2"
+  }
+}

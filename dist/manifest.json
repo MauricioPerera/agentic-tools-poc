@@ -1,0 +1,108 @@
+{
+  "registryVersion": "1.0",
+  "generatedAt": "2026-04-25T19:41:15.707Z",
+  "commit": null,
+  "tools": [
+    {
+      "slug": "echo-pretty",
+      "name": "Echo Pretty",
+      "summary": "Echoes input text with optional case transformation and prefix",
+      "version": "1.0.0",
+      "capabilities": [
+        "transform",
+        "text"
+      ],
+      "sideEffects": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to echo back"
+          },
+          "upper": {
+            "type": "boolean",
+            "default": false,
+            "description": "Uppercase output"
+          },
+          "lower": {
+            "type": "boolean",
+            "default": false,
+            "description": "Lowercase output"
+          },
+          "prefix": {
+            "type": "string",
+            "default": "",
+            "description": "Optional prefix"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "length": {
+            "type": "integer"
+          }
+        }
+      },
+      "requiredEnv": [],
+      "networkPolicy": {
+        "allow": []
+      },
+      "source": "skills/echo-pretty.mjs"
+    },
+    {
+      "slug": "ip-info",
+      "name": "IP Info",
+      "summary": "Returns public IP information (country, ISP, timezone) using ipapi.co",
+      "version": "1.0.0",
+      "capabilities": [
+        "network",
+        "lookup"
+      ],
+      "sideEffects": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ip": {
+            "type": "string",
+            "description": "IP to look up. Defaults to the caller's public IP."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "ip": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "org": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
+      "requiredEnv": [],
+      "networkPolicy": {
+        "allow": [
+          "ipapi.co"
+        ]
+      },
+      "source": "skills/ip-info.mjs"
+    }
+  ]
+}

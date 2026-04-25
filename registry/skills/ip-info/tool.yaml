@@ -1,0 +1,22 @@
+slug: ip-info
+name: IP Info
+summary: Returns public IP information (country, ISP, timezone) using ipapi.co
+version: 1.0.0
+capabilities: [network, lookup]
+sideEffects: read
+inputSchema:
+  type: object
+  properties:
+    ip:
+      type: string
+      description: "IP to look up. Defaults to the caller's public IP."
+outputSchema:
+  type: object
+  properties:
+    ip:       { type: string }
+    country:  { type: string }
+    city:     { type: string }
+    org:      { type: string }
+    timezone: { type: string }
+networkPolicy:
+  allow: [ipapi.co]

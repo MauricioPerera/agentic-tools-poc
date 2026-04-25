@@ -1,0 +1,19 @@
+slug: echo-pretty
+name: Echo Pretty
+summary: Echoes input text with optional case transformation and prefix
+version: 1.0.0
+capabilities: [transform, text]
+sideEffects: none
+inputSchema:
+  type: object
+  required: [text]
+  properties:
+    text:    { type: string, description: "Text to echo back" }
+    upper:   { type: boolean, default: false, description: "Uppercase output" }
+    lower:   { type: boolean, default: false, description: "Lowercase output" }
+    prefix:  { type: string,  default: "",    description: "Optional prefix" }
+outputSchema:
+  type: object
+  properties:
+    text:   { type: string }
+    length: { type: integer }

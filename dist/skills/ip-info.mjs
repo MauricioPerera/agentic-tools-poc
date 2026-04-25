@@ -1,0 +1,1 @@
+async function i(n,e){let r=`https://ipapi.co/${n.ip?encodeURIComponent(n.ip)+"/":""}json/`;e.log(`ip-info: GET ${r}`);let o=await e.fetch(r);if(!o.ok)throw new Error(`ipapi.co returned ${o.status}`);let t=await o.json();return{ip:t.ip,country:t.country_name,city:t.city,org:t.org,timezone:t.timezone}}export{i as default};
