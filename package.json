@@ -11,7 +11,9 @@
     "all": "npm run validate && npm run build && npm run manifest",
     "demo": "node client/demo.mjs",
     "mcp:server": "node client/mcp-server.mjs",
-    "mcp:test": "node client/test-mcp.mjs"
+    "mcp:test": "node client/test-mcp.mjs",
+    "agent:granite": "node client/agent-granite.mjs",
+    "exec": "node client/exec-bash.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

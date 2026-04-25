@@ -115,10 +115,47 @@ To pin a specific registry version, add an env var:
 npm run mcp:test   # spawns the server + drives it as an MCP client
 ```
 
+## Validated against Cloudflare Workers AI / Granite 4.0 H Micro
+
+The single-`bash` function-calling thesis tested live against
+`@cf/ibm-granite/granite-4.0-h-micro` (3.4B params, on Cloudflare's free
+inference tier).
+
+Driver: `client/agent-granite.mjs` (full agent loop) and `client/exec-bash.mjs`
+(local tool executor used by external loops).
+
+### Results
+
+| Scenario | Outcome | Tokens (total) |
+|---|---|---|
+| Sanity: "capital of Spain?" no tools | Final answer correct | 40 |
+| Function-call: "convert phrase to uppercase" | tool_call → exec → JSON parse → final answer "AGENTIC TOOLS POC" | 400 (2 rounds) |
+| Self-correction: ip lookup with bad jq path | Granite saw the jq error, pivoted to grep+awk on next turn | 462 (2 rounds, then went off-track) |
+
+### What this proves
+
+- Granite 4.0 H Micro **does** emit OpenAI-compatible `tool_calls` for our
+  single `bash` tool — the registry pattern is consumable by small open-weights
+  models, not just frontier ones.
+- The agent loop (tool_call → local exec → observation → next turn) round-trips
+  correctly. Workers AI `arguments` come back occasionally double-encoded;
+  `agent-granite.mjs` handles both shapes.
+- Self-correction works once when the model sees an explicit error, but a 3B
+  model can't always validate the *content* of tool output (it accepted a
+  malformed `"2001` as a country code). Larger models would.
+
+### Run it
+
+```bash
+CF_ACCOUNT_ID=<your-account-id> CF_API_TOKEN=<token-with-Workers-AI-scope> \
+  node client/agent-granite.mjs "convert 'agentic tools poc' to uppercase"
+```
+
 ## Status
 
 - ✅ Phase 1: trusted in-process execution via dynamic `import()` (current).
 - ✅ MCP server with `bash` + `tool_schema` (current).
+- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro (current).
 - ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
   community-contributed tools.
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.
