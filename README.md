@@ -1,11 +1,17 @@
 # agentic-tools-poc
 
-POC: AI agents discover and run tools whose **TypeScript source lives in
-GitHub**, distributed via **jsDelivr** as a free global CDN, and executed by
+An architecture for building, owning, and distributing the **skill catalog**
+of an AI agent. Skills live as TypeScript in a public **GitHub** repo,
+distributed via **jsDelivr** as a free global CDN, and executed by
 [**just-bash**](https://github.com/vercel-labs/just-bash) — Vercel's virtual
 bash environment for agents.
 
-The agent talks to its tools through a regular bash shell, so they compose
+The premise: **agent capabilities are skills, not tools**. Skills are owned
+by the agent's author and carry not just the function but its context,
+per-model tuning, recovery patterns, and meta-knowledge. See
+[PHILOSOPHY.md](./PHILOSOPHY.md) for the full reasoning.
+
+The agent talks to its skills through a regular bash shell, so they compose
 with `jq`, `grep`, pipes and all the unix vocabulary it already knows.
 
 ## Distribution
@@ -24,18 +30,23 @@ Pin a version: replace `@main` with `@v0.1.0` once tagged.
 
 ```
 registry/skills/<slug>/
-  tool.yaml      metadata + JSONSchema (input/output)
-  src/index.mjs  default export: async (input, ctx) => output
-  README.md      human + agent-facing docs
+  tool.yaml         metadata + JSONSchema (input/output) for the skill
+  src/index.mjs     default export: async (input, ctx) => output
+  README.md         human + agent-facing docs (the context layer)
 schema/skill.schema.mjs   shared validator (CI linter + runtime)
 scripts/
-  validate.mjs   lints every tool.yaml against SKILL_SCHEMA
-  build.mjs      esbuild-bundles each src/ → dist/skills/<slug>.mjs
-  manifest.mjs   emits dist/manifest.json
+  validate.mjs      lints every tool.yaml against SKILL_SCHEMA
+  build.mjs         esbuild-bundles each src/ → dist/skills/<slug>.mjs
+  manifest.mjs      emits dist/manifest.json
 client/
-  loader.mjs     fetches manifest, registers each tool as a just-bash command
-  demo.mjs       runs a two-tool bash pipeline as proof
-dist/            generated, committed, served by jsDelivr
+  loader.mjs               fetches manifest, registers each skill as a just-bash command
+  smart-bash.mjs           recovery layer: enriched observations with schema + diagnostics
+  mcp-server.mjs           composable MCP server (one `bash` tool)
+  mcp-server-classic.mjs   classic MCP server (one tool per skill)
+  agent-granite.mjs        Workers AI agent loop driver
+  compare.mjs              A/B harness: composable vs classic, same queries
+  demo.mjs / test-mcp.mjs  bash + MCP integration tests
+dist/                      generated, committed, served by jsDelivr
 ```
 
 ## Local commands

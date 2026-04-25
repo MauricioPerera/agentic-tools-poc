@@ -1,0 +1,247 @@
+# Philosophy
+
+This project rests on a single architectural claim:
+
+> **Agent capabilities are skills, not tools.**
+
+The distinction is structural, not semantic, and it has consequences for how
+you build, distribute, and own agent functionality. This document explains
+the reasoning, the evidence, and what it prescribes.
+
+## TL;DR
+
+- A *tool* is an external object granted to a model: a function signature,
+  maintained by someone else.
+- A *skill* is an internal capability owned by the agent's author: function
+  + context + model-specific tuning + recovery patterns + meta-knowledge,
+  all under one roof.
+- Vendor MCP servers expose tools. They are *recommendations* about how to
+  consume an underlying API, packaged as runtime infrastructure.
+- For agents that care about cost, quality, or longevity, ownership of the
+  skill catalog wins. The vendor maintains the API; you maintain how your
+  agent consumes it.
+
+## The reframe: tool vs skill
+
+Most of the AI tooling vocabulary talks about *tools*: discrete functions
+a model can call. The metaphor is a hardware store — interchangeable parts
+you pick up when needed. Pick up a hammer when you need to drive a nail.
+
+But that's not what an agent capability actually is. A working capability
+includes:
+
+1. The function itself
+2. The judgment of when to apply it
+3. The model-specific tuning that makes it actually work
+4. The recovery patterns when something goes wrong
+5. The meta-knowledge of how it composes with others
+
+Only item (1) fits the hardware-store metaphor. Items (2)–(5) are knowledge
+embedded in *whoever owns the agent*. When all five live together as one
+artifact, that artifact is no longer a tool. It is a **skill**.
+
+| | Tool | Skill |
+|---|---|---|
+| Ownership | External | Internal |
+| Composition | A function signature | Function + context + tuning + recovery + meta |
+| Specialization | Generic ("works for any model") | Specific (this model, this use case) |
+| Maintenance | Third party | Agent's author |
+| Metaphor | "You have access to a hammer" | "You know how to frame a wall" |
+
+This isn't gymnastics. It's an ontological distinction. A tool is an
+*object* (separate from its user). A skill is a *property* (part of its
+bearer).
+
+## The five layers of a skill
+
+What makes a skill more than a tool, layer by layer:
+
+### 1. The function
+
+What the skill does. Inputs, outputs, side effects. JSONSchema lives here.
+This is the only layer a tool definition contains.
+
+### 2. The context
+
+When to apply the skill. Preconditions. Guarantees. The kinds of question
+this answers. A skill knows it's the right answer for *"what country am I
+in"* but not for *"what is the capital of Spain"* (which is training
+knowledge, no skill needed).
+
+### 3. The model-specific tuning
+
+A 3.4B model needs descriptions with concrete examples and explicit flags.
+A frontier model needs almost nothing — just the shape. The same
+underlying capability exposes differently per model class. Tools are
+written once for "any model"; skills carry their per-model specialization.
+
+### 4. The recovery
+
+When the skill fails, what does the failure communicate back to the model?
+`jq: parse error: Cannot index string` is a tool's failure mode.
+*"Upstream tool returns flat {ip, country}; use `.country` not
+`.ip.country`"* is a skill's. The skill knows how to teach the model on
+the way back up.
+
+### 5. The meta-knowledge
+
+How does this skill compose with others? What pipeline patterns are
+idiomatic? What are the antipatterns? A skill catalog includes this; a
+tool catalog rarely does.
+
+## Why this matters now
+
+Two forces are converging:
+
+**Open-weights models are useful but fragile.** Granite 4.0 H Micro can
+drive an agent for $0 on the Workers AI free tier — but only if its
+capabilities come with the four extra layers. Without them, it
+hallucinates, drops required arguments, or misreads outputs.
+
+**The MCP marketplace is forming.** Vendors are racing to publish servers.
+Each is presented as an interchangeable component. But agent capabilities
+aren't interchangeable: they encode opinions about flow, granularity,
+response shape, and acceptable failure modes. Those opinions should belong
+to whoever builds the agent, not whoever provides the underlying API.
+
+Together: **small models + ownership of skills wins economically and
+qualitatively**. Large models + dependence on third-party tools loses on
+cost; small models + dependence on third-party tools loses on quality.
+
+## Three axioms about MCP servers
+
+We can be precise about what an MCP server is, structurally:
+
+### Axiom 1 — Every MCP server has an API underneath
+
+The MCP code itself proves the endpoint exists (HTTP, RPC, SDK call, local
+function). There is never a case where "only the MCP exists" — there is
+always a layer below it that the MCP wraps. The MCP is therefore never the
+*only* way to consume the service; it is one packaging of the consumption.
+
+### Axiom 2 — An MCP tool is a curated workflow, not a single endpoint
+
+`create_invoice_for_customer` is probably 4-5 API calls + business logic
++ response formatting. The packaging into one "tool" is what makes it
+safe and ergonomic for an LLM. Without that curation the model would have
+to orchestrate the raw API itself, which is slow, costly, and dangerous.
+
+### Axiom 3 — The curation is opinion frozen into infrastructure
+
+The vendor decided which calls to bundle, in what order, with which
+defaults, returning which fields. That's their judgment. If you accept the
+MCP server as a runtime dependency, you accept their judgment.
+
+**Conclusion**: an MCP server from a vendor is *a recommendation about how
+to consume their API, packaged as infrastructure*. It is reusable code
+(like an SDK or an examples folder), not load-bearing infrastructure for
+your agent. Treat it like you would treat any vendor's `examples/`
+directory: useful as a starting point, not as a production dependency.
+
+## What this prescribes
+
+If you build agents with intent (not just prototypes), the architecture
+should look like this:
+
+```
+APIs (the actual contracts, owned by vendors)
+        ↓
+Your skill registry (TS wrappers, owned by you, in your repo)
+        ↓
+Your runtime (composable bash + smart observations / classic / hybrid)
+        ↓
+Your agent (Granite / Llama / Claude / etc.)
+```
+
+Where:
+
+- The vendor maintains the API. That is their responsibility.
+- You maintain how your agent consumes that API. That is your
+  responsibility.
+- Vendor MCP servers, when they exist and when they help, are reference
+  implementations you can fork into your registry — not runtime
+  dependencies.
+
+This inverts the usual stance. The default question becomes *"what skill
+do I need?"* rather than *"what MCP server is available?"*. Skills are
+first-class; MCP is one of several transport options for exposing them.
+
+## Where vendor MCP servers do help
+
+To be honest about it: there are real cases.
+
+- **OAuth flows where the vendor handles refresh + session.**
+  Reimplementing this per-vendor is real work.
+- **APIs that aren't publicly documented but the vendor publishes an MCP.**
+  Your only path.
+- **Five-minute prototypes.** Speed beats ownership for throwaway code.
+- **Highly standard tools** (e.g., filesystem, git, sqlite) where every
+  consumer wants the same shape.
+
+Outside these cases, the trade-off favors ownership.
+
+## Evidence from this POC
+
+We tested both modes against IBM Granite 4.0 H Micro on Workers AI
+across three queries (see README → "Composable vs classic"):
+
+| Mode | Rounds | Tokens | Correct |
+|---|---:|---:|:---:|
+| Composable (one `bash` skill, registry skills as commands) | 9 | 3779 | 3/3 |
+| Classic (each skill exposed individually as MCP tool) | 7 | 2651 | 3/3 |
+
+Classic won on this small model because JSONSchema validation acted as a
+safety net against hallucinated commands and missing arguments. The
+"intermediate values shouldn't cross the model boundary" thesis (which
+favors composable) only holds when the model can reliably write the
+composition. A 3.4B model can't, on chained tasks.
+
+The point isn't that one mode wins universally — that depends on the
+model. The point is: **we could measure this and tune accordingly because
+we owned the skills**. With third-party MCP servers, we couldn't have run
+this comparison, applied the `smart-bash` enrichment that made Granite
+self-correct, or chosen between modes per task. The ownership unlocks
+the optimization loop.
+
+## Naming convention used in this repo
+
+- **Skill** — a unit of capability owned by the agent's author. Lives in
+  `registry/skills/<slug>/`. Includes the five layers above.
+- **Tool** — used only when referring to the MCP protocol (where the
+  word is fixed by the spec) or to function-calling APIs in general.
+- **Workflow** — a skill that composes multiple API calls or other
+  skills.
+- **Registry** — the catalog of skills, distributed via GitHub +
+  jsDelivr (or any CDN that serves a public Git repo).
+
+If you're building on top of this project, prefer *skill* wherever you
+mean an owned capability.
+
+## What this project is and isn't
+
+It is **not**:
+
+- An "MCP alternative". MCP is a useful transport protocol, and we ship
+  two MCP servers (composable + classic) as part of the runtime.
+- A marketplace.
+- A framework.
+- An opinion about which model to use.
+
+It is:
+
+- An architecture for building, owning, and distributing the skill
+  catalog of an agent — where each skill carries its function, context,
+  per-model tuning, recovery patterns, and meta-knowledge as one
+  artifact in your version-controlled repository.
+
+## Further reading
+
+- [README](./README.md) — usage, A/B benchmark numbers, MCP host
+  configuration.
+- [registry/skills/](./registry/skills/) — example skills (`echo-pretty`,
+  `ip-info`) demonstrating the five layers.
+- [client/smart-bash.mjs](./client/smart-bash.mjs) — the recovery layer
+  in code: enriched observations that teach a small model how to
+  self-correct.
+- [client/compare.mjs](./client/compare.mjs) — the measurement loop that
+  ownership of the skill catalog enables.
