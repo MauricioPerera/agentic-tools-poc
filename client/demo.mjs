@@ -13,7 +13,9 @@ import { loadRegistry } from './loader.mjs';
 
 const banner = (s) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
 
-const { manifest, commands } = await loadRegistry();
+// Allow SHA pinning via env var to bypass jsDelivr's @main cache (TTL ~7min).
+// Usage: REGISTRY=https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@<sha>/dist node client/demo.mjs
+const { manifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
 banner(`Registry loaded: ${manifest.tools.length} tool(s)`);
 for (const t of manifest.tools) console.log(`  • ${t.slug} v${t.version} — ${t.summary}`);
 
@@ -24,7 +26,7 @@ let r = await bash.exec('echo-pretty --text "hello world" --upper');
 console.log('exitCode:', r.exitCode);
 console.log('stdout:  ', r.stdout.trim());
 
-banner('2) ip-info alone (live network call to ipapi.co)');
+banner('2) ip-info alone (live network call to api.country.is)');
 r = await bash.exec('ip-info');
 console.log('exitCode:', r.exitCode);
 console.log('stdout:  ', r.stdout.trim());

@@ -1,0 +1,51 @@
+name: Build registry
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'registry/**'
+      - 'scripts/**'
+      - 'schema/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-registry
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Validate + Build + Manifest
+        run: npm run all
+
+      - name: Commit dist/ if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            git add dist/
+            git commit -m "ci: rebuild dist/ for ${GITHUB_SHA::7}"
+            git push
+          else
+            echo "dist/ unchanged — nothing to commit."
+          fi
