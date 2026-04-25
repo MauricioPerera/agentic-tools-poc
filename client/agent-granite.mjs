@@ -13,6 +13,7 @@
  */
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
+import { makeObservation } from './smart-bash.mjs';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
@@ -42,7 +43,10 @@ const messages = [
       `Available registry commands:\n${toolList}\n\n` +
       `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
       `Always use bash to act; never answer from training knowledge for questions ` +
-      `that need live data. Be terse.`,
+      `that need live data. Be terse.\n` +
+      `Tool observations include tools_referenced (with output_schema, example, ` +
+      `and ready-to-use jq_paths) and diagnostics. When a command fails, read ` +
+      `diagnostics and use the suggested jq_paths instead of guessing syntax.`,
   },
   { role: 'user', content: QUERY },
 ];
@@ -92,12 +96,11 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
       const cmd  = String(args?.command ?? '');
       console.log(`tool_call: bash -> ${cmd}`);
       const result = await bash.exec(cmd);
-      const stdout = (result.stdout ?? '').trim();
-      const stderr = (result.stderr ?? '').trim();
-      const observation = JSON.stringify({
-        stdout, stderr, exitCode: result.exitCode,
-      });
-      console.log(`observation: ${observation.slice(0, 200)}${observation.length > 200 ? '…' : ''}`);
+      const obs = process.env.SMART === '0'
+        ? { stdout: (result.stdout ?? '').trim(), stderr: (result.stderr ?? '').trim(), exitCode: result.exitCode }
+        : makeObservation(cmd, result, manifest);
+      const observation = JSON.stringify(obs);
+      console.log(`observation: ${observation.slice(0, 240)}${observation.length > 240 ? '…' : ''}`);
       messages.push({ role: 'tool', tool_call_id: tc.id, content: observation });
     }
     continue;

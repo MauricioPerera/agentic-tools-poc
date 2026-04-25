@@ -144,6 +144,60 @@ Driver: `client/agent-granite.mjs` (full agent loop) and `client/exec-bash.mjs`
   model can't always validate the *content* of tool output (it accepted a
   malformed `"2001` as a country code). Larger models would.
 
+## Smart contract: trade extra rounds for correctness on a small model
+
+Hypothesis: a small model (Granite 4.0 H Micro at ~$0/free tier) doing 3
+rounds with a richer tool-result contract is cheaper than calling a frontier
+model once. Validated.
+
+`client/smart-bash.mjs` wraps `bash.exec` and returns enriched observations
+instead of raw `{stdout, stderr, exitCode}`:
+
+- `tools_referenced[]` — which registry tools appear in the pipeline, each
+  with its `output_schema`, a synthesized `example` value, and `jq_paths`
+  (literal jq paths the model can copy-paste, generated from the schema)
+- `schema_check` — when the pipeline ends in a registry tool, parses stdout
+  and validates against `outputSchema`, returning `{validated, ok, errors}`
+- `diagnostics[]` — pattern-matched hints for known antipatterns:
+  - `jq: Cannot index string` → tells the model the upstream tool is flat,
+    not nested, and points to `jq_paths` for valid options
+  - `command not found` → lists available registry commands and standard tools
+  - empty stdout despite exit 0 → suggests running the registry tool alone
+  - escaped-quote stdout fragment → suggests the pipeline split on the wrong
+    delimiter and recommends `jq -r .<field>` instead
+
+### A/B test, same query, same first failed call
+
+| Variant | Rounds | Total tokens | Outcome |
+|---|---:|---:|---|
+| **Raw observations** (`{stdout, stderr, exitCode}`) | 3 | ~1318 | ❌ Returned `"2001"` (wrong) |
+| **Smart observations** (`+ tools_referenced + diagnostics + schema_check`) | 3 | ~1661 | ✅ Returned `MX` (correct) |
+| **Overly directive** ("RULE: must use jq_paths") | 1 | ~499 | ⚠️ Hallucinated `US` — skipped tool call entirely |
+
+### The takeaway
+
+- Smart contract used **~26% more tokens** than raw, but went from **wrong**
+  to **correct**. On the Workers AI free tier (10K neurons/day), both are $0.
+- Granite is roughly 5 orders of magnitude cheaper per call than frontier
+  paid models, so even +50% rounds is irrelevant cost-wise — what matters is
+  whether convergence happens at all. With smart contracts, it does.
+- Don't prescribe behavior in the system prompt ("you MUST use jq_paths"),
+  just enrich the observation. Prescribing leads to skipped tool calls and
+  hallucinated answers. The contract enriches; the model decides.
+
+### Use it
+
+```bash
+# enriched observations (default)
+node client/exec-bash.mjs "ip-info | jq -r '.country'"
+
+# raw observations (baseline for A/B)
+RAW=1 node client/exec-bash.mjs "ip-info | jq -r '.country'"
+
+# agent loop with toggle
+SMART=0 CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/agent-granite.mjs "your query"
+```
+
 ### Run it
 
 ```bash

@@ -7,15 +7,19 @@
  */
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
+import { makeObservation } from './smart-bash.mjs';
 
 const cmd = process.argv.slice(2).join(' ');
 if (!cmd) { console.error('usage: exec-bash.mjs <command>'); process.exit(2); }
 
-const { commands } = await loadRegistry({ registry: process.env.REGISTRY });
+const RAW = process.env.RAW === '1';
+
+const { manifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
 const bash = new Bash({ customCommands: commands });
 const r = await bash.exec(cmd);
-process.stdout.write(JSON.stringify({
-  stdout: r.stdout ?? '',
-  stderr: r.stderr ?? '',
-  exitCode: r.exitCode ?? 0,
-}) + '\n');
+
+const out = RAW
+  ? { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.exitCode ?? 0 }
+  : makeObservation(cmd, r, manifest);
+
+process.stdout.write(JSON.stringify(out) + '\n');
