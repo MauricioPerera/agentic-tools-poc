@@ -13,10 +13,11 @@
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
 import { makeObservation } from './smart-bash.mjs';
+import { normalizeReply, tokensUsed } from './model-adapter.mjs';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
-const MODEL   = process.env.GRANITE_MODEL ?? '@cf/ibm-granite/granite-4.0-h-micro';
+const MODEL   = process.env.MODEL ?? process.env.GRANITE_MODEL ?? '@cf/ibm-granite/granite-4.0-h-micro';
 const MAX_ROUNDS = Number(process.env.MAX_ROUNDS ?? 5);
 
 if (!ACCOUNT || !TOKEN) { console.error('Missing CF_ACCOUNT_ID or CF_API_TOKEN env.'); process.exit(2); }
@@ -139,25 +140,25 @@ async function runClassic(q) {
 async function runLoop(messages, tools, q, execTool) {
   let totalTokens = 0;
   for (let round = 1; round <= MAX_ROUNDS; round++) {
-    const reply = await callModel(messages, tools);
-    totalTokens += reply.usage?.total_tokens ?? 0;
-    const choice = reply.choices?.[0];
-    const msg = choice?.message ?? {};
+    const raw = await callModel(messages, tools);
+    const reply = normalizeReply(raw, MODEL);
+    totalTokens += tokensUsed(reply, messages, tools);
+
     messages.push({
       role: 'assistant',
-      content: msg.content ?? '',
-      ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls } : {}),
+      content: reply.content,
+      ...(reply.tool_calls.length ? { tool_calls: reply.tool_calls } : {}),
     });
 
-    if (msg.tool_calls?.length) {
-      for (const tc of msg.tool_calls) {
+    if (reply.tool_calls.length) {
+      for (const tc of reply.tool_calls) {
         const obs = await execTool(tc);
         messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(obs) });
       }
       continue;
     }
 
-    const finalAnswer = (msg.content || '').trim();
+    const finalAnswer = reply.content.trim();
     return { rounds: round, tokens: totalTokens, finalAnswer, correct: q.expect.test(finalAnswer) };
   }
   return { rounds: MAX_ROUNDS, tokens: totalTokens, finalAnswer: '(no convergence)', correct: false };

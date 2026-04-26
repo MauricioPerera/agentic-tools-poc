@@ -216,44 +216,90 @@ CF_ACCOUNT_ID=<your-account-id> CF_API_TOKEN=<token-with-Workers-AI-scope> \
   node client/agent-granite.mjs "convert 'agentic tools poc' to uppercase"
 ```
 
-## Composable vs classic — A/B benchmark with Granite 4.0 H Micro
+## Cross-model A/B benchmark
 
 Two MCP servers ship in this repo so you can compare them on the same model:
 
-- `client/mcp-server.mjs` — **composable**: one `bash` tool, registry tools
+- `client/mcp-server.mjs` — **composable**: one `bash` tool, registry skills
   available as commands inside it. Compose via unix pipes.
-- `client/mcp-server-classic.mjs` — **classic**: each registry tool exposed
+- `client/mcp-server-classic.mjs` — **classic**: each registry skill exposed
   as its own MCP function with its own JSONSchema (traditional
   function-calling shape).
 
-Both wrap the same registry; the only variable is the surface the model
-sees. Run the live benchmark with:
+The same harness (`client/compare.mjs`) drives both modes against any
+Workers AI model via the `MODEL` env var. We benchmarked two free-tier
+models on the same 3-query suite:
 
 ```bash
-CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
+MODEL=@cf/ibm-granite/granite-4.0-h-micro CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
+MODEL=@hf/nousresearch/hermes-2-pro-mistral-7b CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
 ```
 
-### Results (Granite 4.0 H Micro, 3 queries)
+### Results — IBM Granite 4.0 H Micro (3.4B)
 
 | Query | Mode | Rounds | Tokens | Correct |
 |---|---|---:|---:|:---:|
-| Q1 — *Convert 'agentic tools poc' to uppercase* | composable | 2 | 677 | ✅ |
-| Q1 | classic | 2 | 755 | ✅ |
-| Q2 — *What ISO country code am I in?* | composable | 2 | 662 | ✅ |
-| Q2 | classic | 2 | 667 | ✅ |
-| Q3 — *Get country code, echo uppercased with prefix* | composable | **5** | **2440** | ✅ |
-| Q3 | classic | **3** | **1229** | ✅ |
-| **Totals** | composable | **9** | **3779** | 3/3 |
-| **Totals** | classic | **7** | **2651** | 3/3 |
+| Q1 — *uppercase 'agentic tools poc'* | composable | 2 | 677 | ✅ AGENTIC TOOLS POC |
+| Q1 | classic | 2 | 755 | ✅ AGENTIC TOOLS POC |
+| Q2 — *what country am I in* | composable | 2 | 662 | ✅ MX |
+| Q2 | classic | 2 | 667 | ✅ MX |
+| Q3 — *country code uppercased w/ prefix* | composable | 5 | 2440 | ✅ YOU ARE IN: MX |
+| Q3 | classic | 3 | 1229 | ✅ YOU ARE IN: MX |
+| **Totals** | composable | **9** | **3779** | **3/3** |
+| **Totals** | classic | **7** | **2651** | **3/3** |
 
-Classic won by **~30% in tokens and ~22% in rounds** on this 3-query suite.
-Both modes converged to correct answers.
+### Results — Hermes 2 Pro Mistral (7B, beta)
 
-### Why classic outperformed composable on a small model
+Caveats: token counts are **char-based estimates** (`~chars/4`) because
+Hermes returns `usage` all zeros in beta. Response shape also differs from
+Granite (`result.response` + top-level `result.tool_calls[]` with parsed
+arguments) — the new `client/model-adapter.mjs` normalizes both.
 
-Q3 is the revealing case. In composable mode Granite:
+| Query | Mode | Rounds | Tokens (est) | Correct |
+|---|---|---:|---:|:---:|
+| Q1 — *uppercase 'agentic tools poc'* | composable | 2 | ~290 | ✅ (round 1 failed; round 2 hallucinated the right answer) |
+| Q1 | classic | 2 | ~310 | ✅ AGENTIC TOOLS POC |
+| Q2 — *what country am I in* | composable | 2 | ~280 | ❌ asked `.ip` not `.country`, then hallucinated **"IS" (Iceland)** |
+| Q2 | classic | 2 | ~250 | ❌ invented `ip: "192.168.1.1"`, then "Sorry, couldn't retrieve your location" |
+| Q3 — *country code uppercased w/ prefix* | composable | 2 | ~300 | ❌ malformed `ip-info --ip` (no value) → 404 → gave up |
+| Q3 | classic | 3 | ~440 | ⚠️ only converged after we ignored a bad arg (`ip: "not_specified"`) |
+| **Totals (no rescue)** | composable | 6 | ~870 | **1/3** |
+| **Totals (no rescue)** | classic | 7 | ~1000 | **1/3 → 2/3 with rescue** |
 
-1. Hallucinated a `curl https://api.country.io/...` (round 1) — `curl` isn't
+### Cross-model takeaway
+
+| | Granite 4.0 H Micro (3.4B) | Hermes 2 Pro Mistral (7B beta) |
+|---|---|---|
+| Total correctness (composable) | 3/3 | 1/3 |
+| Total correctness (classic) | 3/3 | 1-2/3 |
+| Self-correction on tool failure | ✅ Tries alternative paths | ❌ Gives up after one failure |
+| Hallucination resistance | ✅ Stays in tool world | ❌ Invents IPs, countries, files |
+| Follows "reply with just the result" | ✅ | ❌ Adds apologetic prose |
+| Native tool-call format quality | Double-encoded args (quirk) | Cleaner: parsed object args, no wrapper |
+| Reported tokens | ✅ Real | ❌ Always 0 (broken in beta) |
+
+**Counter-intuitive but well-supported: smaller, newer Granite outperforms
+larger, older Hermes for our skill-driven agent pattern.** Tool fine-tuning
+recency matters more than parameter count. The smart-bash contract +
+ownership of skills helps both models, but doesn't compensate for
+fundamental weaknesses in instruction-following and self-correction.
+
+### Recommendation matrix (updated)
+
+| Model class | Recommended mode | Notes |
+|---|---|---|
+| Tool-tuned small (Granite 4.0 micro) | **classic** primary, composable for simple tasks | JSONSchema validation as safety net works well |
+| Older 7B (Hermes 2 Pro, OpenHermes 2.5) | classic — but consider switching model | Hallucinates aggressively, gives up after failure |
+| Mid-tier (8B–70B) | A/B both for your domain | Depends on task mix |
+| Frontier (Claude, GPT-4o) | **composable** | Reliable bash composition, fewer tokens |
+
+
+
+### Why composable struggled on small models — Q3 in detail
+
+In composable mode Granite (3.4B):
+
+1. Hallucinated `curl https://api.country.io/...` (round 1) — `curl` isn't
    in the just-bash sandbox. Diagnostic kicked in.
 2. Pivoted to `ip-info | jq -r '.country'` (round 2). Got `MX`.
 3. Tried `echo-pretty --upper --prefix "MX"` — missing required `--text`
@@ -263,21 +309,13 @@ Q3 is the revealing case. In composable mode Granite:
 5. Assembled the answer manually in the final response (round 5).
 
 In classic mode, the model just called `ip-info` then `echo-pretty` with
-all required structured args validated by the JSONSchema gateway. No
-hallucination, no missing flags, 3 rounds.
+all required structured args validated by JSONSchema. No hallucination,
+no missing flags, 3 rounds.
 
-**The lesson**: composable wins on token theory (intermediate values
-shouldn't cross the model boundary) only if the model can reliably
-*compose*. A 3.4B model can't always; a frontier model can. JSONSchema
-function-calling protects small models from the syntactic cliffs of bash.
-
-### Practical recommendation
-
-| Model class | Recommended mode |
-|---|---|
-| Small open-weights (≤ 8B) | **classic** — JSONSchema validation acts as safety net |
-| Mid-tier (8B–70B) | A/B both for your domain — depends on query mix |
-| Frontier (Claude, GPT-4o) | **composable** — wins via pipe composition |
+**The lesson**: composable wins on token theory only if the model can
+reliably compose. A small or older model can't; a frontier model can.
+JSONSchema function-calling acts as a safety net for small models against
+the syntactic cliffs of bash.
 
 The repo lets you flip with zero code changes: just point your MCP host
 at `mcp-server.mjs` (composable) or `mcp-server-classic.mjs` (classic),
@@ -289,8 +327,11 @@ or both side-by-side under different names.
 - ✅ MCP server (composable) with `bash` + `tool_schema`.
 - ✅ MCP server (classic) with one tool per registry entry.
 - ✅ Smart-bash observation contract (schema + diagnostics + jq_paths).
-- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro.
-- ✅ Composable vs classic A/B benchmark.
+- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro and
+  Hermes 2 Pro Mistral 7B.
+- ✅ Composable vs classic A/B benchmark across both models.
+- ✅ `model-adapter.mjs` normalizes Workers AI per-model response shapes
+  (Granite OpenAI-style, Hermes legacy `result.response` shape).
 - ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
   community-contributed tools.
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.
