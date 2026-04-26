@@ -1,4 +1,4 @@
-name: Build registry
+name: Build registry → dist branch
 on:
   push:
     branches: [main]
@@ -6,6 +6,8 @@ on:
       - 'registry/**'
       - 'scripts/**'
       - 'schema/**'
+      - 'client/**'
+      - 'types/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/build.yml'
@@ -22,7 +24,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout main
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -35,17 +38,65 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Validate + Build + Manifest
+      - name: Run full pipeline (typecheck, test, validate, lint, codegen:check, build, manifest)
         run: npm run all
 
-      - name: Commit dist/ if changed
+      - name: Publish dist/ to `dist` branch
         run: |
+          set -euo pipefail
+
+          # Build artefacts live at ./dist after `npm run all`.
+          # We push them to a dedicated `dist` branch so:
+          #   - main stays free of generated files (no commit churn)
+          #   - jsDelivr serves cleanly from `@dist` instead of `@main/dist`
+          #   - the build branch's git history is purely a log of registry releases
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain dist/)" ]; then
-            git add dist/
-            git commit -m "ci: rebuild dist/ for ${GITHUB_SHA::7}"
-            git push
+
+          MAIN_SHA=$(git rev-parse HEAD)
+          MAIN_SHORT=${MAIN_SHA:0:7}
+          MSG="build: dist for ${MAIN_SHORT}"
+
+          # Create an orphan worktree for the dist branch
+          git worktree add --detach /tmp/dist
+          cd /tmp/dist
+
+          # Switch to or create the dist branch (orphan = no shared history)
+          if git ls-remote --exit-code --heads origin dist > /dev/null 2>&1; then
+            git fetch origin dist
+            git checkout dist
+            git pull origin dist
           else
-            echo "dist/ unchanged — nothing to commit."
+            git checkout --orphan dist
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          # Replace contents with the freshly-built dist/
+          rm -rf ./skills ./manifest.json
+          cp -r "$GITHUB_WORKSPACE/dist/." .
+
+          # README so visitors landing on the branch know what they're seeing
+          cat > README.md <<EOF
+          # dist branch
+
+          Auto-generated build artefacts for the agentic-tools-poc registry.
+
+          Sources live on \`main\` — see https://github.com/MauricioPerera/agentic-tools-poc
+
+          Distributed publicly via jsDelivr:
+
+          - Manifest: \`https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/manifest.json\`
+          - Skills:   \`https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/skills/<slug>.mjs\`
+
+          Last build: ${MAIN_SHORT} on \$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "${MSG}"
+            git push origin dist
+            echo "✓ Published dist/ to \`dist\` branch (from main ${MAIN_SHORT})"
+          else
+            echo "dist/ unchanged — nothing to publish."
           fi

@@ -1,0 +1,28 @@
+# Normalize all text files to LF on commit. Stops the CRLF↔LF churn that
+# was producing dozens of warnings per commit on Windows contributors and
+# constant `dist/manifest.json` conflicts with the CI bot.
+* text=auto eol=lf
+
+# Explicitly LF for source + config (catches edge cases auto-detection misses)
+*.ts        text eol=lf
+*.mts       text eol=lf
+*.mjs       text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.md        text eol=lf
+*.toml      text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+
+# Generated files — same LF rule, but mark as generated for GitHub diff
+# collapse and reviewer clarity.
+dist/**     linguist-generated=true
+**/types.gen.ts  linguist-generated=true
+
+# Binary safeguard
+*.png       binary
+*.jpg       binary
+*.gif       binary
+*.ico       binary

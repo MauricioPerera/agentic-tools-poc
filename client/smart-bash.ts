@@ -229,6 +229,13 @@ function checkType(schema: JSONSchema | undefined, data: unknown, path: string):
   }
   if (schema.type === 'object' && schema.properties) {
     const obj = data as Record<string, unknown>;
+    // Validate that required fields are present — caught a real class of
+    // handler bugs where the upstream JSON omits a field the handler claimed
+    // to always populate. Without this check, schema_check.ok was a false
+    // positive whenever a required field was simply missing from the output.
+    for (const k of schema.required ?? []) {
+      if (obj[k] === undefined) errs.push(`${path}.${k}: missing required field`);
+    }
     for (const [k, sub] of Object.entries(schema.properties)) {
       if (obj[k] !== undefined) errs.push(...checkType(sub, obj[k], `${path}.${k}`));
     }

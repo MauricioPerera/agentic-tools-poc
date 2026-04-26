@@ -138,6 +138,22 @@ test('R4: silent when outputSchema has properties', () => {
   assert.equal(r.length, 0);
 });
 
+test('R4: ERROR when outputSchema declares type but has no properties', () => {
+  // Regression test for the bug found in code review #2:
+  // `Object.keys({ type: 'object' })` was 1 → rule passed silently.
+  // Now we check `properties` specifically.
+  const r = outputSchemaMissing(skill({ outputSchema: { type: 'object' } }));
+  assert.equal(r.length, 1, 'expected error for outputSchema with no properties');
+  assert.equal(r[0]!.severity, 'error');
+});
+
+test('R4: ERROR when outputSchema.properties is an empty object', () => {
+  const r = outputSchemaMissing(skill({
+    outputSchema: { type: 'object', properties: {} },
+  }));
+  assert.equal(r.length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // R5 — destructive-no-warning
 

@@ -244,3 +244,67 @@ test('makeObservation: schema_check reports type mismatch errors', () => {
   assert.equal(obs.schema_check.ok, false);
   assert.ok(obs.schema_check.errors?.some((e) => /ip/.test(e) && /string/.test(e)));
 });
+
+// ---------------------------------------------------------------------------
+// Required-field validation (regression guard for the bug found in code review)
+
+test('makeObservation: schema_check fails when output omits a required field', () => {
+  // Build a manifest that DECLARES `country` as required so the check fires.
+  const requiredManifest = {
+    tools: [
+      {
+        slug: 'ip-info',
+        inputSchema: { type: 'object', properties: {} },
+        outputSchema: {
+          type: 'object',
+          required: ['ip', 'country'],
+          properties: {
+            ip:      { type: 'string' },
+            country: { type: 'string' },
+          },
+        },
+      },
+    ],
+  } as unknown as Parameters<typeof makeObservation>[2];
+
+  // Handler omits `country` — should be a validation error.
+  const obs = makeObservation(
+    `ip-info`,
+    { stdout: '{"ip":"1.2.3.4"}', stderr: '', exitCode: 0 },
+    requiredManifest,
+  );
+  assert.ok(obs.schema_check);
+  assert.equal(obs.schema_check.validated, true);
+  assert.equal(obs.schema_check.ok, false);
+  assert.ok(
+    obs.schema_check.errors?.some((e) => /country/.test(e) && /missing required/.test(e)),
+    `expected a missing-required error for "country", got: ${JSON.stringify(obs.schema_check.errors)}`,
+  );
+});
+
+test('makeObservation: schema_check passes when output has all required fields', () => {
+  const requiredManifest = {
+    tools: [
+      {
+        slug: 'ip-info',
+        inputSchema: { type: 'object', properties: {} },
+        outputSchema: {
+          type: 'object',
+          required: ['ip', 'country'],
+          properties: {
+            ip:      { type: 'string' },
+            country: { type: 'string' },
+          },
+        },
+      },
+    ],
+  } as unknown as Parameters<typeof makeObservation>[2];
+
+  const obs = makeObservation(
+    `ip-info`,
+    { stdout: '{"ip":"1.2.3.4","country":"MX"}', stderr: '', exitCode: 0 },
+    requiredManifest,
+  );
+  assert.ok(obs.schema_check);
+  assert.equal(obs.schema_check.ok, true);
+});

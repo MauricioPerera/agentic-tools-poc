@@ -69,7 +69,12 @@ for (const slug of slugs) {
 
   if (checkOnly) {
     const existing = existsSync(targetPath) ? readFileSync(targetPath, 'utf8') : '';
-    if (existing !== generated) {
+    // Normalize line endings before comparison: codegen always emits LF,
+    // but git's autocrlf or a Windows editor might have rewritten the file
+    // with CRLF. We only care about semantic drift, not whitespace bytes.
+    const normExisting  = existing.replace(/\r\n/g, '\n');
+    const normGenerated = generated.replace(/\r\n/g, '\n');
+    if (normExisting !== normGenerated) {
       drifted++;
       console.error(`✗ ${slug}: types.gen.ts is out of date with tool.yaml`);
     } else {

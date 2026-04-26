@@ -3,3 +3,9 @@ node_modules/
 *.log
 .env
 .env.local
+
+# dist/ is built by CI on every push and committed to the `dist` branch.
+# It's not part of the main branch's source tree — see PHILOSOPHY.md and
+# the build workflow in .github/workflows/build.yml. Local `npm run build`
+# still produces it for development; we just don't track it in main.
+dist/

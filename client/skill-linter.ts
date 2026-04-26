@@ -118,19 +118,25 @@ export const requiredNoDescription: LintRule = (skill) => {
  * R4 — `output-schema-missing`
  * Without outputSchema, smart-bash can't generate jq_paths or run schema_check.
  * The whole "agent self-corrects" loop relies on this metadata.
+ *
+ * Note: a schema like `{ type: 'object' }` with no `properties` is functionally
+ * empty — smart-bash can't synthesize an example or extract jq_paths. We check
+ * for non-empty `properties`, not just non-empty schema-object keys.
  */
 export const outputSchemaMissing: LintRule = (skill) => {
-  if (skill.outputSchema && Object.keys(skill.outputSchema).length > 0) return [];
+  const props = skill.outputSchema?.properties;
+  if (props && Object.keys(props).length > 0) return [];
   return [
     {
       rule: 'output-schema-missing',
       severity: 'error',
       field: '$.outputSchema',
-      message: `outputSchema is missing or empty.`,
+      message: `outputSchema is missing or has no properties.`,
       suggestion:
-        `Declare outputSchema so smart-bash can produce jq_paths, run ` +
-        `schema_check on stdout, and synthesize examples. Without it, the ` +
-        `agent has no structured way to introspect what came back.`,
+        `Declare outputSchema with at least one property so smart-bash can ` +
+        `produce jq_paths, run schema_check on stdout, and synthesize ` +
+        `examples. Without it, the agent has no structured way to introspect ` +
+        `what came back.`,
     },
   ];
 };

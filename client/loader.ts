@@ -16,7 +16,10 @@ import type {
   ToolContext,
 } from '../types/index.ts';
 
-const DEFAULT_REGISTRY = 'https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist';
+// dist/ is published to the `dist` branch by CI on every push to main, so
+// jsDelivr serves it directly without the `/dist/` subpath. Pin to a SHA
+// (`@<sha>` or `@v1.2.3` after tagging) for production stability.
+const DEFAULT_REGISTRY = 'https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist';
 
 // Re-exported for backwards compatibility with existing tests.
 export const parseArgs = parseArgvAgainstSchema;

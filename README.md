@@ -21,15 +21,20 @@ with `jq`, `grep`, pipes and all the unix vocabulary it already knows.
 
 ## Distribution
 
-Once committed to `main`, every build artefact is reachable on jsDelivr:
+`main` holds the source. Every push to `main` triggers a CI workflow that
+runs the full pipeline (typecheck → tests → validate → lint → codegen
+check → build → manifest) and publishes the built artefacts to a
+dedicated `dist` branch. This keeps `main` free of generated files and
+lets jsDelivr serve the registry from a clean URL:
 
 ```
-https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist/manifest.json
-https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist/skills/echo-pretty.mjs
-https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist/skills/ip-info.mjs
+https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/manifest.json
+https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/skills/echo-pretty.mjs
+https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/skills/ip-info.mjs
 ```
 
-Pin a version: replace `@main` with `@v0.1.0` once tagged.
+Pin a release: replace `@dist` with `@<commit-sha>` (always available) or
+`@v1.2.3` once tagged.
 
 ## Repo layout
 
@@ -129,7 +134,7 @@ ip-info | jq -r '.country' | xargs -I {} echo-pretty --text "{}" --upper --prefi
 To pin a specific registry version, add an env var:
 
 ```json
-"env": { "REGISTRY": "https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@v0.1.0/dist" }
+"env": { "REGISTRY": "https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@v0.1.0" }
 ```
 
 ### Local testing
@@ -483,7 +488,7 @@ behind a `tool.yaml` contract:
 
 Each skill is ≤100 lines of TS. All wrap public APIs directly — no
 vendor MCP servers. The full registry serves from jsDelivr at
-`https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist/manifest.json`
+`https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/manifest.json`
 in ~150ms cold, sub-ms warm via Cache API.
 
 `npm run smoke` runs every skill against its real upstream API as a
