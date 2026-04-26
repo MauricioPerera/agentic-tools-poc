@@ -6,10 +6,13 @@ distributed via **jsDelivr** as a free global CDN, and executed by
 [**just-bash**](https://github.com/vercel-labs/just-bash) — Vercel's virtual
 bash environment for agents.
 
-Codebase: ~5,200 LOC of strict TypeScript, runs natively on Node 22+ via
-type-stripping (no build step for execution). 160 tests via `node:test`,
-including wire-format MCP integration suites that spawn the actual server
-subprocesses. Zero runtime dependencies beyond `just-bash`,
+Codebase: ~6,000 LOC of strict TypeScript, runs natively on Node 22+ via
+type-stripping (no build step for execution). 196 tests via `node:test`
+covering parsers, the codegen converter, the smart-bash observation
+contract (incl. required-field validation + fallback diagnostic), per-model
+overrides, the llms.txt skills consumer, MCP wire format (spawned
+subprocesses), bundle integrity (corrupted-vs-clean fixtures), and pricing
+math. Zero runtime dependencies beyond `just-bash`,
 `@modelcontextprotocol/sdk`, and `yaml`.
 
 The premise: **agent capabilities are skills, not tools**. Skills are owned
@@ -42,13 +45,24 @@ Pin a release: replace `@dist` with `@<commit-sha>` (always available) or
 ## Repo layout
 
 ```
+PHILOSOPHY.md                   the architectural posture (skills > tools)
+THREAT-MODEL.md                 5 threat vectors + Phase 1 mitigations + Phase 2 plan
+
 types/index.ts                  shared TypeScript types (Skill, Manifest,
-                                Observation, NormalizedReply, …)
+                                Observation, NormalizedReply, TokenUsage, …)
 registry/skills/<slug>/
-  tool.yaml                     metadata + JSONSchema (input/output)
+  tool.yaml                     metadata + JSONSchema (input/output) + model_overrides
   src/index.ts                  typed handler: SkillHandler<Input, Output>
   src/types.gen.ts              auto-generated Input/Output from tool.yaml
   README.md                     human + agent-facing docs (the context layer)
+
+examples/                       real raw-vs-smart observation diffs captured
+                                from `npm run exec` against local dist/
+  01-clean-success.json         clean exec — schema_check + jq_paths
+  02-jq-path-error.json         the .ip.country bug + diagnostic that fixes it
+  03-command-not-found.json     curl hallucination + catalog enumeration
+  04-pipeline-with-transform.json  schema_check explains why it was skipped
+  05-classic-mode-call.json     same skill, function-call shape comparison
 
 schema/skill.schema.ts          structural SKILL_SCHEMA + tiny validator
 scripts/
@@ -56,29 +70,36 @@ scripts/
   lint.ts                       semantic lint (8 rules from empirical A/B)
   codegen-types.ts              tool.yaml → src/types.gen.ts (+ --check mode)
   build.ts                      esbuild-bundles each src/ → dist/skills/<slug>.mjs
-  manifest.ts                   emits dist/manifest.json
+  manifest.ts                   emits dist/manifest.json (incl. per-bundle sha256)
   smoke-test-skills.ts          live test of network-using skills (npm run smoke)
 
 client/
-  loader.ts                     fetches manifest, registers each skill as a
-                                just-bash command (file:// + http(s) supported)
+  loader.ts                     fetches manifest, verifies sha256, registers each
+                                skill as a just-bash command (file:// + http(s))
   arg-parser.ts                 argv↔input + tool_call.arguments parsers
-  smart-bash.ts                 enriched observations: schema + diagnostics
+  smart-bash.ts                 enriched observations: schema_check (incl.
+                                required-field validation), jq_paths, diagnostics
+                                (5 pattern-matched + fallback for unmatched stderr)
   skill-tuning.ts               per-model overrides + system_prompt_fragments
   skill-linter.ts               8 lint rules as pure functions
   jsonschema-to-ts.ts           the converter behind codegen
-  model-adapter.ts              normalizes Workers AI per-model response shapes
+  model-adapter.ts              normalizes Workers AI shapes (OpenAI / Hermes /
+                                Llama 3.1 fp8 / Qwen 2.5 Coder) → one shape
+  pricing.ts                    per-model $/M in/out (live from Cloudflare catalog)
   llms-txt-loader.ts            consumer of the proposed `## Skills` extension
   mcp-server.ts                 composable MCP server (one `bash` tool)
   mcp-server-classic.ts         classic MCP server (one tool per skill)
   agent-granite.ts              Workers AI agent loop driver
-  compare.ts                    A/B harness: composable vs classic, same queries
+  compare.ts                    A/B harness: composable vs classic, same queries,
+                                input/output tokens + USD cost per query
   exec-bash.ts                  single-command CLI wrapper for external loops
   load-domain.ts                CLI for the llms.txt ## Skills consumer
   demo.ts                       local bash composition demo (no MCP)
 
-test/*.test.ts                  160 tests (node:test, zero extra deps)
-                                — unit + MCP wire-format integration + drift detection
+test/*.test.ts                  196 tests (node:test, zero extra deps)
+  arg-parser, codegen-drift, jsonschema-to-ts, llms-txt-loader, loader,
+  loader-integrity, mcp-server, mcp-server-classic, model-adapter, pricing,
+  skill-linter, skill-tuning, smart-bash
 
 dist/                           generated by `npm run build`. Not tracked in
                                 main; CI publishes to the `dist` branch.
@@ -275,14 +296,20 @@ instead of raw `{stdout, stderr, exitCode}`:
   with its `output_schema`, a synthesized `example` value, and `jq_paths`
   (literal jq paths the model can copy-paste, generated from the schema)
 - `schema_check` — when the pipeline ends in a registry tool, parses stdout
-  and validates against `outputSchema`, including missing-required checks
-- `diagnostics[]` — pattern-matched hints for known antipatterns:
+  and validates against `outputSchema`, including **missing-required checks**
+  (catches handlers that omit a declared-required field, not just type drift)
+- `diagnostics[]` — hints derived from the failure mode:
   - `jq: Cannot index string` → tells the model the upstream tool is flat,
     not nested, and points to `jq_paths` for valid options
   - `command not found` → lists available registry commands and standard tools
+  - jq compile / parse error on non-JSON → suggests verifying upstream output
   - empty stdout despite exit 0 → suggests running the registry tool alone
   - escaped-quote stdout fragment → suggests the pipeline split on the wrong
     delimiter and recommends `jq -r .<field>` instead
+  - **fallback** (none of the above): when an unrecognized error is observed,
+    smart-bash emits a diagnostic listing the catalog of patterns it knows +
+    the available registry commands, so the model knows what it has to work
+    with even when the specific error is novel
 
 Concrete example — the model wrote `ip-info | jq -r '.ip.country'` (wrong:
 `country` is at the root, not nested under `ip`). Raw observation:
@@ -748,25 +775,33 @@ Source-of-truth + execution
 - ✅ TypeScript end-to-end (handlers, scripts, tests; strict mode)
 - ✅ Codegen: `tool.yaml` → `src/types.gen.ts` (handlers import generated types)
 - ✅ Drift detection: `npm run codegen:check` gates CI
+- ✅ **Bundle integrity: per-bundle sha256 in `manifest.json`, verified by
+   loader before `import()`** (see [THREAT-MODEL.md](./THREAT-MODEL.md) V1)
 
 Runtime
 - ✅ Composable MCP server (one `bash` tool + `tool_schema` introspection)
 - ✅ Classic MCP server (one MCP tool per registry skill)
-- ✅ smart-bash observation contract (schema, jq_paths, pattern-matched
-   diagnostics, required-field validation)
+- ✅ smart-bash observation contract: schema, jq_paths, 5 pattern-matched
+   diagnostics + fallback for unmatched stderr, required-field validation
 - ✅ Per-model overrides (`model_overrides.<model>` rescues small models;
    `system_prompt_fragments` aggregates across skills)
-- ✅ `model-adapter.ts` normalizes Workers AI per-model response shapes
-   (Granite OpenAI-style, Hermes legacy, Gemma reasoning)
+- ✅ `model-adapter.ts` normalizes Workers AI shapes — OpenAI-style
+   (Granite, Gemma), Hermes-style (Hermes, Llama 3.1 8B fp8), and Qwen
+   `response: {name, arguments}` object shape
 - ✅ Loader supports `https://`, `file://`, and bare paths
+- ✅ `pricing.ts` — per-model $/M in/out from Cloudflare's live catalog,
+   `compare.ts` reports input/output split + USD cost per query
 
 Quality
-- ✅ 160 tests (`node:test`, zero extra deps)
-   — unit tests for every parser/converter/rule
+- ✅ 196 tests (`node:test`, zero extra deps)
+   — unit tests for every parser, converter, and lint rule
    — 17 MCP wire-format integration tests (spawn server subprocess)
-   — codegen drift integration test
-- ✅ Skill linter with 8 semantic rules derived from the empirical 3-model A/B
-   (Granite, Hermes, Gemma), 27 unit tests
+   — codegen drift integration test (catches stale generated types in CI)
+   — loader-integrity integration test (3 cases: clean, tampered, no-sha)
+   — model-adapter test for every Workers AI response shape
+   — pricing math + cost-formatting tests
+- ✅ Skill linter with 8 semantic rules derived from the empirical A/B,
+   27 unit tests
 - ✅ smoke-test-skills.ts hits live upstream APIs (5/5 passing today)
 
 Distribution
@@ -776,21 +811,38 @@ Distribution
    stop producing CRLF/LF churn
 
 Validated
-- ✅ End-to-end against Workers AI Granite 4.0 H Micro, Hermes 2 Pro
-   Mistral 7B, and Gemma 4 26B-a4b-it
-- ✅ Composable vs classic A/B benchmark across all three models
+- ✅ End-to-end against 5 Workers AI models: Granite 4.0 H Micro, Hermes
+   2 Pro Mistral 7B, Llama 3.1 8B fp8, Gemma 4 26B-a4b-it, Qwen 2.5
+   Coder 32B (3 queries × 2 modes per model — small N, see hedges in the
+   recommendation matrix)
+- ✅ Composable vs classic A/B with input/output token split + USD cost
+   per query
 - ✅ Per-model skill tuning rescues weak models (Hermes 1-3/6 → 5+/6)
 - ✅ `client/llms-txt-loader.ts` — first independent consumer of the
    proposed `llms.txt ## Skills` extension
    ([Issue #116](https://github.com/AnswerDotAI/llms-txt/issues/116))
+- ✅ `examples/` — real raw-vs-smart observation diffs, captured from
+   `npm run exec` against the local registry
+
+Security posture
+- ✅ V1 (hostile bundle to dist branch): mitigated by sha256 + CI gates
+- ⚠️ V2 (malicious skill author): Phase 1 trusts authors — handler can
+   `import('node:fs')` and bypass `ctx` convention; relies on PR review
+- ✅ V3 (dependency confusion): `npm ci` + zero runtime deps in skills
+- ⚠️ V4 (network attacker): TLS + sha256 protects bundles, manifest
+   signing pending in Phase 2
+- ⏭ V5 (prompt injection in skill output): no defense yet; Phase 2 R&D
 
 Not yet
 - ⏭ Phase 2 sandboxed execution via just-bash's `js-exec` (QuickJS) for
-   community-contributed skills
+   community-contributed skills — closes V2 + V5 above
+- ⏭ Manifest signing (ed25519) — closes V4
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs
-- ⏭ Re-run benchmark on Llama 3.1 8B / Qwen 2.5 Coder 32B for the
-   middle-tier crossover point
-- ⏭ Decide whether `outputSchema.required` should be enforced as part of
-   the skill contract (today optional → handler outputs are technically
-   "any field may be missing"; tightening would catch more handler bugs
-   at the cost of stricter skill authoring)
+- ⏭ Per-skill versioning (today every skill shares the manifest's git SHA)
+- ⏭ Wider eval suite — current is 3 queries × 5 models; the headline
+   "Granite is the cheapest correct stack" deserves more queries for
+   confidence beyond "anecdote with rigour"
+- ⏭ Decide whether `outputSchema.required` should be enforced strictly
+   in the codegen (today optional fields produce all-`?:` interfaces;
+   tightening would catch more handler bugs at the cost of stricter
+   skill authoring)

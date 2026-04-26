@@ -264,20 +264,38 @@ any compliant site to see discovery flow §2.3 in action.
 
 ## Further reading
 
-- [README](./README.md) — usage, A/B benchmark numbers, MCP host
-  configuration, full repo layout.
+- [README](./README.md) — usage, A/B benchmark numbers across **5 models**
+  (Granite, Hermes, Gemma, Llama, Qwen-Coder), MCP host configuration,
+  full repo layout.
+- [THREAT-MODEL.md](./THREAT-MODEL.md) — honest answer to "what stops a
+  malicious skill from compromising the host?". Documents V1–V5 attack
+  vectors, current Phase 1 mitigations (sha256 integrity, network
+  allowlist, code review), and the Phase 2 plan (manifest signing +
+  QuickJS sandbox) that gates community contributions.
 - [registry/skills/](./registry/skills/) — six skills demonstrating the
   five layers across diverse upstream APIs (echo-pretty, ip-info, url2md,
   github-repo-info, weather, dictionary).
 - [client/smart-bash.ts](./client/smart-bash.ts) — the recovery layer
   in code: enriched observations (schema, jq_paths, diagnostics, required
-  validation) that teach a small model how to self-correct.
+  validation, fallback diagnostic when nothing else fires) that teach a
+  small model how to self-correct.
+- [client/model-adapter.ts](./client/model-adapter.ts) — normalises the
+  three Workers AI response shapes (OpenAI-style, Hermes XML, Qwen
+  `response.{name,arguments}` object) into a single `ToolCall` so the
+  agent loop is shape-agnostic.
+- [client/pricing.ts](./client/pricing.ts) — input/output token cost
+  table from the Cloudflare catalog. Lets the A/B harness report USD per
+  query, surfacing the 38× gap between Granite ($0.017/M in) and
+  Qwen-Coder ($0.66/M in) that pure latency/quality numbers hide.
 - [client/skill-tuning.ts](./client/skill-tuning.ts) — per-model overrides
   + `system_prompt_fragments` aggregation that rescue weak models
   without touching the underlying behaviour.
 - [client/skill-linter.ts](./client/skill-linter.ts) — eight semantic
-  rules derived from the empirical 3-model A/B; `npm run lint` runs
+  rules derived from the empirical multi-model A/B; `npm run lint` runs
   them in CI.
+- [client/loader.ts](./client/loader.ts) — registry loader with per-bundle
+  sha256 verification (V1/V4 mitigation) + `file://` support so MCP
+  integration tests don't need an HTTP server.
 - [scripts/codegen-types.ts](./scripts/codegen-types.ts) +
   [client/jsonschema-to-ts.ts](./client/jsonschema-to-ts.ts) — closes
   the contract loop: `tool.yaml` is the single source of truth and
@@ -286,5 +304,11 @@ any compliant site to see discovery flow §2.3 in action.
   skills published via the proposed `## Skills` extension.
 - [client/compare.ts](./client/compare.ts) — the measurement loop that
   ownership of the skill catalog enables.
-- [test/](./test/) — 160 tests including MCP wire-format integration
-  suites that spawn the actual server subprocesses.
+- [examples/](./examples/) — five real raw-vs-smart observation diffs
+  captured from live runs (clean success, schema-check rejection, jq
+  recovery, missing-required diagnostic, classic-mode call shape).
+- [test/](./test/) — 196 tests covering arg parsing, model adapters
+  (all three shapes), loader integrity (sha256 tamper detection),
+  smart-bash diagnostics, codegen drift, linter rules, and MCP
+  wire-format integration suites that spawn the actual server
+  subprocesses.
