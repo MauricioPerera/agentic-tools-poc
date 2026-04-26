@@ -26,10 +26,14 @@ const ROOT = dirname(HERE);
 const SERVER = join(ROOT, 'client', 'mcp-server.ts');
 const DIST = resolve(ROOT, 'dist');
 
+// dist/ is produced by the `pretest` npm hook before this suite runs.
+// On any path that bypasses that hook (running test files directly with
+// `node --test`), we surface a clear error instead of letting the loader
+// throw a confusing "manifest fetch failed".
 if (!existsSync(join(DIST, 'manifest.json'))) {
-  // Surface a useful message instead of a confusing "manifest fetch failed"
-  // when someone runs npm test without having built first.
-  throw new Error(`dist/manifest.json missing. Run \`npm run build\` first.`);
+  throw new Error(
+    `dist/manifest.json missing. Run \`npm test\` (which builds first) or \`npm run build\` directly.`,
+  );
 }
 
 let client: Client;

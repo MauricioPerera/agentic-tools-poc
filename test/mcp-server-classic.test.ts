@@ -23,8 +23,11 @@ const ROOT = dirname(HERE);
 const SERVER = join(ROOT, 'client', 'mcp-server-classic.ts');
 const DIST = resolve(ROOT, 'dist');
 
+// dist/ is produced by the `pretest` npm hook before this suite runs.
 if (!existsSync(join(DIST, 'manifest.json'))) {
-  throw new Error(`dist/manifest.json missing. Run \`npm run build\` first.`);
+  throw new Error(
+    `dist/manifest.json missing. Run \`npm test\` (which builds first) or \`npm run build\` directly.`,
+  );
 }
 
 let client: Client;
