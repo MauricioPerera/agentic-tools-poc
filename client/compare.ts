@@ -14,9 +14,10 @@
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.ts';
 import { makeObservation } from './smart-bash.ts';
-import { normalizeReply, tokensUsed } from './model-adapter.ts';
+import { normalizeReply, tokensUsed, type TokenUsage } from './model-adapter.ts';
 import { applyOverridesToManifest, getSystemPromptFragments } from './skill-tuning.ts';
 import { parseToolCallArguments, inputToArgv, argvToShellCommand } from './arg-parser.ts';
+import { computeCost, formatCost, getPricing } from './pricing.ts';
 import type { ChatMessage, Manifest, NormalizedReply, ToolCall } from '../types/index.ts';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
@@ -59,16 +60,31 @@ const promptFragments = getSystemPromptFragments(rawManifest, MODEL);
 const bash = new Bash({ customCommands: commands as never });
 
 const tuned = JSON.stringify(manifest) !== JSON.stringify(rawManifest);
+const MODEL_PRICING = getPricing(MODEL);
 console.log(`Model: ${MODEL}`);
 console.log(`Skill tuning: ${tuned ? 'ON (model-specific overrides applied)' : 'OFF (default skill shape)'}`);
 if (promptFragments.length) {
   console.log(`Prompt fragments: ${promptFragments.length} model-specific instruction(s) injected`);
 }
+if (MODEL_PRICING) {
+  const beta = MODEL_PRICING.beta ? ' [BETA — currently free]' : '';
+  console.log(
+    `Pricing: $${MODEL_PRICING.inputPerMUSD}/M input, $${MODEL_PRICING.outputPerMUSD}/M output${beta}` +
+    (MODEL_PRICING.notes ? ` (${MODEL_PRICING.notes})` : ''),
+  );
+}
 console.log();
 
 interface RunResult {
   rounds: number;
-  tokens: number;
+  /** Sum of usage.prompt_tokens across every round (or our estimate). */
+  inputTokens: number;
+  /** Sum of usage.completion_tokens across every round (or our estimate). */
+  outputTokens: number;
+  /** USD cost computed from per-model pricing × tokens. null if we don't price the model. */
+  costUSD: number | null;
+  /** True when usage.estimated was true on any round (Hermes beta). */
+  anyEstimated: boolean;
   finalAnswer: string;
   correct: boolean;
 }
@@ -84,38 +100,65 @@ for (const q of QUERIES) {
   });
 }
 
-// Pretty table
-console.log(`\n${'═'.repeat(78)}\nSUMMARY\n${'═'.repeat(78)}`);
-console.log('Query        | Mode       | Rounds | Tokens | Correct | Final answer');
-console.log('-------------|------------|-------:|-------:|---------|-------------------------');
+// Pretty table — separate input/output and show $ cost so the cross-mode
+// trade-off is honest. Composable typically ships less input but more
+// output; classic is the opposite. With output usually 2-10× input price,
+// the token-count alone hides which mode is actually cheaper.
+console.log(`\n${'═'.repeat(96)}\nSUMMARY\n${'═'.repeat(96)}`);
+console.log('Query        | Mode       | Rounds |    In |   Out |   Total |    Cost  | ✓ | Answer');
+console.log('-------------|------------|-------:|------:|------:|--------:|---------:|---|---------');
 for (const r of results) {
   for (const mode of ['composable', 'classic'] as const) {
     const x = r[mode];
+    const total = x.inputTokens + x.outputTokens;
+    const cost = x.costUSD === null ? '   n/a' : formatCost(x.costUSD).padStart(9);
     console.log(
-      `${r.query.padEnd(12)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.tokens).padStart(6)} | ${(x.correct ? '✓' : '✗').padEnd(7)} | ${(x.finalAnswer || '').slice(0, 30)}`,
+      `${r.query.padEnd(12)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.inputTokens).padStart(5)} | ${String(x.outputTokens).padStart(5)} | ${String(total).padStart(7)} | ${cost} | ${x.correct ? '✓' : '✗'} | ${(x.finalAnswer || '').slice(0, 30)}`,
     );
   }
 }
 
-const totals = results.reduce(
+interface ModeTotals { rounds: number; input: number; output: number; cost: number; ok: number; }
+const totals = results.reduce<{ composable: ModeTotals; classic: ModeTotals }>(
   (acc, r) => ({
     composable: {
       rounds: acc.composable.rounds + r.composable.rounds,
-      tokens: acc.composable.tokens + r.composable.tokens,
-      ok: acc.composable.ok + (r.composable.correct ? 1 : 0),
+      input:  acc.composable.input  + r.composable.inputTokens,
+      output: acc.composable.output + r.composable.outputTokens,
+      cost:   acc.composable.cost   + (r.composable.costUSD ?? 0),
+      ok:     acc.composable.ok     + (r.composable.correct ? 1 : 0),
     },
     classic: {
       rounds: acc.classic.rounds + r.classic.rounds,
-      tokens: acc.classic.tokens + r.classic.tokens,
-      ok: acc.classic.ok + (r.classic.correct ? 1 : 0),
+      input:  acc.classic.input  + r.classic.inputTokens,
+      output: acc.classic.output + r.classic.outputTokens,
+      cost:   acc.classic.cost   + (r.classic.costUSD ?? 0),
+      ok:     acc.classic.ok     + (r.classic.correct ? 1 : 0),
     },
   }),
-  { composable: { rounds: 0, tokens: 0, ok: 0 }, classic: { rounds: 0, tokens: 0, ok: 0 } },
+  {
+    composable: { rounds: 0, input: 0, output: 0, cost: 0, ok: 0 },
+    classic:    { rounds: 0, input: 0, output: 0, cost: 0, ok: 0 },
+  },
 );
 
 console.log('\nTotals:');
-console.log(`  composable  rounds=${totals.composable.rounds}  tokens=${totals.composable.tokens}  correct=${totals.composable.ok}/${results.length}`);
-console.log(`  classic     rounds=${totals.classic.rounds}  tokens=${totals.classic.tokens}  correct=${totals.classic.ok}/${results.length}`);
+for (const mode of ['composable', 'classic'] as const) {
+  const t = totals[mode];
+  const total = t.input + t.output;
+  const cost = MODEL_PRICING ? formatCost(t.cost) : 'n/a';
+  console.log(
+    `  ${mode.padEnd(10)}  rounds=${t.rounds}  in=${t.input}  out=${t.output}  total=${total}  cost=${cost}  correct=${t.ok}/${results.length}`,
+  );
+}
+
+const anyEstimated = results.some((r) => r.composable.anyEstimated || r.classic.anyEstimated);
+if (anyEstimated) {
+  console.log(`\n  Note: at least one round had no model-reported usage; values include the chars/4 estimate.`);
+}
+if (!MODEL_PRICING) {
+  console.log(`\n  Note: pricing for "${MODEL}" not in client/pricing.ts table — cost columns omitted.`);
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -195,11 +238,17 @@ async function runLoop(
   q: Query,
   execTool: ExecFn,
 ): Promise<RunResult> {
-  let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let anyEstimated = false;
+
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const raw = await callModel(messages, tools);
     const reply = normalizeReply(raw, MODEL);
-    totalTokens += tokensUsed(reply, messages, tools);
+    const usage: TokenUsage = tokensUsed(reply, messages, tools);
+    inputTokens  += usage.input;
+    outputTokens += usage.output;
+    if (usage.estimated) anyEstimated = true;
 
     messages.push({
       role: 'assistant',
@@ -216,9 +265,23 @@ async function runLoop(
     }
 
     const finalAnswer = reply.content.trim();
-    return { rounds: round, tokens: totalTokens, finalAnswer, correct: q.expect.test(finalAnswer) };
+    return {
+      rounds: round,
+      inputTokens, outputTokens,
+      costUSD: MODEL_PRICING ? computeCost(inputTokens, outputTokens, MODEL_PRICING) : null,
+      anyEstimated,
+      finalAnswer,
+      correct: q.expect.test(finalAnswer),
+    };
   }
-  return { rounds: MAX_ROUNDS, tokens: totalTokens, finalAnswer: '(no convergence)', correct: false };
+  return {
+    rounds: MAX_ROUNDS,
+    inputTokens, outputTokens,
+    costUSD: MODEL_PRICING ? computeCost(inputTokens, outputTokens, MODEL_PRICING) : null,
+    anyEstimated,
+    finalAnswer: '(no convergence)',
+    correct: false,
+  };
 }
 
 async function callModel(messages: ChatMessage[], tools: ToolDef[]): Promise<Parameters<typeof normalizeReply>[0]> {

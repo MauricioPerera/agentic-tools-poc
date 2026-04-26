@@ -1,0 +1,30 @@
+{
+  "$comment": "Real output captured from: node client/exec-bash.ts \"echo-pretty --text 'hello world' --upper\"",
+  "$command": "echo-pretty --text 'hello world' --upper",
+  "raw": {
+    "exitCode": 0,
+    "stdout": "{\"text\":\"HELLO WORLD\",\"length\":11}",
+    "stderr": ""
+  },
+  "smart": {
+    "exitCode": 0,
+    "stdout": "{\"text\":\"HELLO WORLD\",\"length\":11}",
+    "stderr": "",
+    "tools_referenced": [
+      {
+        "slug": "echo-pretty",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "text":   { "type": "string" },
+            "length": { "type": "integer" }
+          }
+        },
+        "example": { "text": "<string>", "length": 0 },
+        "jq_paths": [".text", ".length"]
+      }
+    ],
+    "schema_check": { "validated": true, "ok": true }
+  },
+  "$delta": "Smart adds tools_referenced (with jq_paths the model can copy-paste) and a schema_check. On success, this is small extra context that pays off when the model needs to compose follow-up commands."
+}

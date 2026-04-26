@@ -1,0 +1,30 @@
+{
+  "$comment": "What the agent receives in CLASSIC mode (mcp-server-classic.ts) for the same operation as 01-clean-success.json",
+  "$mode_difference": "In composable mode the agent calls the `bash` tool with a shell command. In classic mode it calls each registry skill as a separate MCP tool with its own JSONSchema-typed args. Same execution path underneath; different surface to the model.",
+
+  "$composable_mode_request": {
+    "tool": "bash",
+    "arguments": { "command": "echo-pretty --text 'hello world' --upper" }
+  },
+
+  "$classic_mode_request": {
+    "tool": "echo-pretty",
+    "arguments": { "text": "hello world", "upper": true }
+  },
+
+  "$composable_mode_response": {
+    "isError": false,
+    "content": [
+      { "type": "text", "text": "{\"text\":\"HELLO WORLD\",\"length\":11}" }
+    ]
+  },
+
+  "$classic_mode_response": {
+    "isError": false,
+    "content": [
+      { "type": "text", "text": "{\"text\":\"HELLO WORLD\",\"length\":11}" }
+    ]
+  },
+
+  "$tradeoff": "Composable: 1 tool definition in tools/list (~200 tokens), longer command output (the model writes bash). Classic: N tool definitions in tools/list (one per skill, ~200 tokens × N), shorter structured args. With output typically 2-10× input price, the cheaper mode depends on round count and which side dominates."
+}

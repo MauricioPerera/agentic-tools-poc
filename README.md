@@ -149,9 +149,41 @@ It exposes **two** tools, not N:
   the agent can introspect on demand instead of paying for N tool definitions
   upfront.
 
-The thesis: composing tools through unix pipes is dramatically more
-token-efficient than discrete function calls, because intermediate values
-never cross the model boundary. Example pipeline run via a single MCP tool
+### How discovery works without N upfront schemas
+
+The bash tool's `description` field includes a one-line catalog of every
+registry skill (slug + summary). That gives the model **awareness** of
+what exists at zero token-cost beyond the tool list. When the model
+decides to actually use a skill it hasn't seen before, it calls
+`tool_schema --slug <name>` to get the full JSONSchema on demand. The
+trade-off: 6 lines of catalog upfront vs ~50 lines of tool definitions
+× 6 skills.
+
+```
+Description of `bash` (excerpt the model receives in tools/list):
+
+  Execute a bash command in a sandboxed environment with the following
+  registry tools available as commands (in addition to standard unix
+  commands like jq, grep, sed, awk, head, xargs, etc):
+
+    • dictionary — Look up an English word's definitions, parts of speech…
+    • echo-pretty — Echoes input text with optional case transformation…
+    • github-repo-info — Look up a public GitHub repo's stars, language…
+    • ip-info — Returns public IP and country code via api.country.is
+    • url2md — Convert a public web URL to clean markdown via …
+    • weather — Current weather + today's high/low for given coordinates…
+
+  Compose tools using pipes for token efficiency: only the final pipeline
+  output is returned. Use `tool_schema --slug <name>` to introspect any
+  registry tool's input/output JSONSchema.
+```
+
+The thesis: composing tools through unix pipes is more token-efficient
+than discrete function calls **when the model can reliably write the
+composition**. The A/B benchmarks below show this only holds for some
+model classes — small open-weights models often benefit more from the
+classic mode's per-skill schemas (which act as a safety net via
+JSONSchema validation). Example pipeline run via a single MCP tool
 call:
 
 ```bash
@@ -220,9 +252,13 @@ Driver: `client/agent-granite.ts` (full agent loop) and `client/exec-bash.ts`
 - The agent loop (tool_call → local exec → observation → next turn) round-trips
   correctly. Workers AI `arguments` come back occasionally double-encoded;
   `agent-granite.ts` handles both shapes.
-- Self-correction works once when the model sees an explicit error, but a 3B
-  model can't always validate the *content* of tool output (it accepted a
-  malformed `"2001` as a country code). Larger models would.
+- Self-correction has limits: in the **baseline** (raw `{stdout, stderr,
+  exitCode}` observations), Granite accepted a malformed `"2001` as a
+  country code because nothing in the observation flagged it as
+  semantically wrong. The same model under the **smart-bash contract**
+  (next section) converges correctly on the same query. The lesson: a
+  3B model can't always validate the *content* of tool output by itself
+  — but it can if the observation contract does it for it.
 
 ## Smart contract: trade extra rounds for correctness on a small model
 
@@ -237,7 +273,7 @@ instead of raw `{stdout, stderr, exitCode}`:
   with its `output_schema`, a synthesized `example` value, and `jq_paths`
   (literal jq paths the model can copy-paste, generated from the schema)
 - `schema_check` — when the pipeline ends in a registry tool, parses stdout
-  and validates against `outputSchema`, returning `{validated, ok, errors}`
+  and validates against `outputSchema`, including missing-required checks
 - `diagnostics[]` — pattern-matched hints for known antipatterns:
   - `jq: Cannot index string` → tells the model the upstream tool is flat,
     not nested, and points to `jq_paths` for valid options
@@ -245,6 +281,40 @@ instead of raw `{stdout, stderr, exitCode}`:
   - empty stdout despite exit 0 → suggests running the registry tool alone
   - escaped-quote stdout fragment → suggests the pipeline split on the wrong
     delimiter and recommends `jq -r .<field>` instead
+
+Concrete example — the model wrote `ip-info | jq -r '.ip.country'` (wrong:
+`country` is at the root, not nested under `ip`). Raw observation:
+
+```json
+{ "exitCode": 5, "stdout": "", "stderr": "jq: parse error: Cannot index string with string \"country\"" }
+```
+
+Smart observation for the same call:
+
+```json
+{
+  "exitCode": 5,
+  "stdout": "",
+  "stderr": "jq: parse error: Cannot index string with string \"country\"",
+  "tools_referenced": [{
+    "slug": "ip-info",
+    "jq_paths": [".ip", ".country"],
+    "output_schema": { "type": "object", "properties": {
+      "ip":      { "type": "string" },
+      "country": { "type": "string", "description": "ISO 3166-1 alpha-2 country code" }
+    }}
+  }],
+  "diagnostics": [
+    "jq could not traverse the path you used. Upstream tool 'ip-info' returns a flat object {ip:string, country:string} — use jq paths that match THAT shape (e.g. `.ip` for a flat field), not nested paths."
+  ]
+}
+```
+
+The diff is: copy-pasteable jq_paths, the actual upstream schema, and a
+sentence explaining what went wrong. Five JSON fields the model now sees
+that it didn't before. See [examples/](./examples/) for more side-by-side
+captures (clean success, command not found, pipeline-with-transform,
+classic-mode call).
 
 ### A/B test, same query, same first failed call
 
@@ -351,36 +421,76 @@ arguments) — the new `client/model-adapter.ts` normalizes both.
 | **Totals (no rescue)** | composable | 6 | ~870 | **1/3** |
 | **Totals (no rescue)** | classic | 7 | ~1000 | **1/3 → 2/3 with rescue** |
 
-### Cross-model takeaway
+### Cross-model takeaway (5 models, 3 queries — N is small, treat as anecdote)
 
-|  | Granite 4.0 H Micro (3.4B, free) | Hermes 2 Pro Mistral (7B beta, free) | Gemma 4 26B-a4b (paid) |
-|---|---|---|---|
-| Composable correctness | 3/3 | 1/3 → 3/3 (with skill tuning) | 2/3 (1 skipped tool) |
-| Classic correctness | 3/3 | 1-2/3 → 3/3 (with skill tuning) | 2/3 (Q3 stuck in loop) |
-| Self-correction on tool failure | ✅ Tries alternatives | ❌ Gives up | ⚠️ Identifies bug in reasoning, can't fix action |
-| Hallucination resistance | ✅ Stays in tool world | ❌ Invents IPs, countries | ✅ Stays in tool world |
-| Skips tool when it can answer directly | ❌ Always uses tool | ❌ Always tries | ⚠️ Skips simple tasks (Q1 composable) |
-| Follows "reply with just the result" | ✅ | ❌ Adds apologetic prose | ✅ |
-| Native tool-call format | Double-encoded args | Parsed args, no wrapper | OpenAI standard |
-| Reported tokens | ✅ Real | ❌ Always 0 (beta) | ✅ Real (with reasoning eating budget) |
-| Cost per query (3-q suite) | ~$0 (free tier) | ~$0 (free tier) | ~$0.0015 (paid) |
+| | Granite 4.0 H Micro (3.4B) | Hermes 2 Pro (7B beta) | Llama 3.1 8B (fp8) | Gemma 4 26B-a4b | Qwen 2.5 Coder (32B) |
+|---|---|---|---|---|---|
+| **Pricing** ($/M in / out) | $0.017 / $0.11 | free in beta | $0.15 / $0.29 | $0.10 / $0.30 | $0.66 / $1.00 |
+| Composable correctness | 3/3 | 1/3 → 3/3 (tuned) | 1/3 (skipped tool, lucky) | 2/3 (1 skipped tool) | 1/3 (hallucinated curl + emitted `<tools>` text) |
+| Classic correctness | 3/3 | 1-2/3 → 3/3 (tuned) | 0/3 (loop on tool output) | 2/3 (Q3 stuck) | 2/3 (Q3 hallucinated answer without tool) |
+| Self-correction on failure | ✅ Tries alternatives | ❌ Gives up | ❌ Loops on bad path | ⚠️ Sees bug in reasoning, can't fix action | ❌ Pretends to call tool, hallucinates |
+| Hallucination resistance | ✅ Stays in tool world | ❌ Invents IPs/countries | ❌ Reaches for `$LC_ALL`, `curl` | ✅ Stays in tool world | ❌ Hallucinated US, made up `<tools>` markup |
+| Invents values for optional args | ✅ Doesn't | ❌ "192.168.1.1", "not_specified" | ❌ "caller" | ✅ Empty {} | ✅ Empty {} |
+| Native tool-call format | OpenAI (double-encoded args quirk) | Hermes-style (top-level `tool_calls`, parsed args) | Hermes-style | OpenAI + `reasoning` field | Yet another (`response: {name, arguments}` object + empty `tool_calls`) |
+| Reported usage tokens | ✅ Real | ❌ All zeros (beta) | ✅ Real | ✅ Real | ✅ Real |
 
-**Two counter-intuitive findings:**
+**Honest claim**: across 5 model classes on this 3-query suite,
+**Granite 4.0 H Micro is the only model that converged correctly on every
+query in both modes** without per-model tuning. This is a single
+benchmark, not a generalization — but it's a striking single benchmark.
 
-1. **Granite (3.4B free) beats Gemma (26B paid) for tool-driven tasks.**
-   Gemma's reasoning capability is a liability here — it eats tokens
-   without improving outcomes, and on Q3 classic it gets stuck in a
-   tokenization-induced loop ("YOU ARE IN: 1MX") that Granite avoided.
+### Cost per query — same workload, same correct answer
 
-2. **Parameter count is a bad predictor of tool-calling reliability.**
-   Tool fine-tuning recency dominates. A small model trained recently
-   for tool use (Granite 4.0) outperforms a 26B reasoning model (Gemma 4)
-   AND a 7B older instruct model (Hermes) on the same suite.
+For Q1 ("convert phrase to uppercase"), classic mode, 2 rounds, ~600 in
++ ~40 out tokens:
 
-The smart-bash contract + ownership of skills amplifies what each model
-can do, but cannot compensate for fundamental weaknesses in
-instruction-following, action-reasoning alignment, or output formatting
-discipline.
+| Model | Input $/M | Output $/M | Cost per Q1 | × Granite |
+|---|---:|---:|---:|---:|
+| Granite 4.0 H Micro | $0.017 | $0.11 | **$0.0000158** | 1× (baseline) |
+| Gemma 4 26B-a4b | $0.10 | $0.30 | $0.000072 | 4.6× |
+| Llama 3.1 8B fp8 | $0.15 | $0.29 | $0.000102 | 6.5× |
+| Qwen 2.5 Coder 32B | $0.66 | $1.00 | $0.000442 | 28× |
+
+For tasks of this complexity, **Granite gives the same correct answer
+~5-30× cheaper**. The obvious caveat: Granite would not handle complex
+multi-step planning the way Qwen Coder might — but for the agent loop
+of "use tools, return result", it's the dominant choice.
+
+### Why output-vs-input asymmetry matters for mode choice
+
+Output is 2-10× more expensive than input across these models. That changes
+the composable-vs-classic story:
+
+- **Composable** ships less input (1 tool definition), more output (the
+  model writes longer bash commands).
+- **Classic** ships more input (N tool definitions, ~50 lines each), less
+  output (structured args are short).
+
+For Granite (output is **6.5×** input price), each extra output token
+costs disproportionately more — so composable's "longer commands" penalty
+hits hardest there. For Qwen (output is **1.5×** input price), the
+balance is closer.
+
+The token-count alone hides this. Run `npm run compare` against any model
+and the SUMMARY table now breaks out `In | Out | Cost` per query so you
+can see which mode is actually cheaper in $ for your workload.
+
+### Three counter-intuitive findings
+
+1. **Granite (3.4B, $0.017/M in) beats Qwen (32B, $0.66/M in) on tool
+   discipline AND cost.** A 32× input-price gap and the larger model
+   still hallucinates `<tools>` markup as text. Param count and price
+   tier are bad predictors of tool-use reliability.
+
+2. **Mid-size open-weights (Llama 3.1 8B, Gemma 4 26B) skip tools when
+   they think they can answer from training.** Disciplined tool use is
+   a separate capability from raw intelligence — and our suite shows
+   only Granite consistently demonstrates it.
+
+3. **The smart-bash contract amplifies models that can self-correct
+   (Granite, Hermes-with-tuning) but doesn't fix models that don't read
+   the diagnostics** (Llama loops on tool output, Qwen ignores
+   `tool_calls` and writes raw `<tools>` text).
 
 ### Rescuing Hermes via per-model skill tuning
 
@@ -433,19 +543,27 @@ concrete examples like `ip-info | jq -r '.country'` so Hermes picks the right
 jq path instead of guessing. `client/compare.ts` and `client/agent-granite.ts`
 both can carry per-model prompt fragments — same idea, different surface.
 
-### Recommendation matrix (updated)
+### Recommendation matrix (read with hedges)
 
-| Model class | Recommended mode | Notes |
-|---|---|---|
-| **Tool-tuned small (Granite 4.0 micro, free)** | **classic** primary, composable for simple tasks | Best free-tier choice we tested — 6/6 in suite. JSONSchema acts as safety net. |
-| Older 7B (Hermes 2 Pro, OpenHermes 2.5, free beta) | classic + per-model skill tuning | Tuning rescues from 1-3/6 to 5+/6 — mandatory for production use |
-| Reasoning mid-tier (Gemma 4 26B-a4b, paid) | classic — watch for tokenization-induced loops | 4-5/6, reasoning eats tokens without improving outcomes |
-| Frontier (Claude, GPT-4o) | **composable** | Reliable bash composition, fewer tokens |
+> **Sample size caveat**: every cell below is grounded in 3 queries on
+> 1 model. Treat the matrix as **directional hypotheses**, not validated
+> recommendations. A wider suite (more queries, more models, more
+> diversity in skill mix) would either solidify or flip several rows.
 
-**Pragmatic conclusion**: for free-tier production agents on Cloudflare,
-**Granite 4.0 H Micro + classic MCP + smart-bash contract** is our
-recommended stack. Larger / paid models did not improve outcomes on this
-suite.
+| Model class | Empirically tested? | Recommended mode (hypothesis) | Why we think so |
+|---|:---:|---|---|
+| Tool-tuned small (Granite 4.0 H Micro, $0.017/M in) | ✅ 6/6 | **classic primary** | Only model in our suite that converged on every query. JSONSchema acts as safety net. |
+| Older 7B instruct (Hermes 2 Pro) | ✅ 1-3/6 → 5+/6 | classic + per-model `model_overrides` block | Without tuning, invents optional args + gives up. With tuning, recovers. |
+| Mid-size open-weights (Llama 3.1 8B) | ✅ 0-1/6 | not recommended without tuning | Loops on tool output, reaches for unavailable commands. Behaviour same as Hermes pre-tuning; tuning likely required. |
+| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 | classic — watch for tokenization loops | Reasoning capability is a liability here; eats tokens without improving outcomes. |
+| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 | not recommended | Hallucinates `<tools>` markup as text, invents answers without calling tools. |
+| Frontier (Claude, GPT-4o, *not tested in this repo*) | ❌ untested | composable (received wisdom) | Reliable bash composition + fewer tokens *should* favour composable, but we have no data here. |
+
+**Cost-aware conclusion**: among the models we benchmarked,
+**Granite 4.0 H Micro + classic MCP + smart-bash contract** has the
+strongest cost / correctness trade-off (~$0.000016 per query vs Qwen at
+~$0.000442 for the same correct answer). Whether this generalizes
+beyond our 3 queries is an open question worth more benchmarking.
 
 
 

@@ -1,0 +1,33 @@
+{
+  "$comment": "Real output from: node client/exec-bash.ts \"ip-info | jq -r '.ip.country'\"",
+  "$command": "ip-info | jq -r '.ip.country'",
+  "$why_this_matters": "Hermes 2 Pro made this exact mistake in our baseline benchmark. With the raw observation, it doesn't know what shape ip-info actually returns and tries another wrong path. With the smart observation, the diagnostic + jq_paths converge it on the correct field.",
+  "raw": {
+    "exitCode": 5,
+    "stdout": "",
+    "stderr": "jq: parse error: Cannot index string with string \"country\""
+  },
+  "smart": {
+    "exitCode": 5,
+    "stdout": "",
+    "stderr": "jq: parse error: Cannot index string with string \"country\"",
+    "tools_referenced": [
+      {
+        "slug": "ip-info",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "ip":      { "type": "string" },
+            "country": { "type": "string", "description": "ISO 3166-1 alpha-2 country code" }
+          }
+        },
+        "example": { "ip": "<string>", "country": "<ISO 3166-1 alpha-2 country code>" },
+        "jq_paths": [".ip", ".country"]
+      }
+    ],
+    "diagnostics": [
+      "jq could not traverse the path you used. Upstream tool 'ip-info' returns a flat object {ip:string, country:string} — use jq paths that match THAT shape (e.g. `.ip` for a flat field), not nested paths."
+    ]
+  },
+  "$delta": "Raw stderr is a generic jq error. Smart adds: (1) the actual upstream schema, (2) ready-to-paste jq_paths, and (3) a sentence-level diagnostic explaining why the path failed. The raw output gave Hermes nothing actionable; the smart output explicitly hands it the fix."
+}

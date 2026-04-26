@@ -1,0 +1,34 @@
+{
+  "$comment": "Real output from: node client/exec-bash.ts \"ip-info | jq -r .country\"",
+  "$command": "ip-info | jq -r .country",
+  "$why_this_matters": "When the pipeline ends in a non-registry transform (jq, grep, awk), the final stdout shape doesn't match any skill's outputSchema — schema_check would false-positive. Smart-bash detects this and explains: 'compare against the upstream tool's example, not the schema'.",
+  "raw": {
+    "exitCode": 0,
+    "stdout": "MX",
+    "stderr": ""
+  },
+  "smart": {
+    "exitCode": 0,
+    "stdout": "MX",
+    "stderr": "",
+    "tools_referenced": [
+      {
+        "slug": "ip-info",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "ip":      { "type": "string" },
+            "country": { "type": "string", "description": "ISO 3166-1 alpha-2 country code" }
+          }
+        },
+        "example": { "ip": "<string>", "country": "<ISO 3166-1 alpha-2 country code>" },
+        "jq_paths": [".ip", ".country"]
+      }
+    ],
+    "schema_check": {
+      "validated": false,
+      "reason": "Pipeline ends in a transform (jq -r .country), not a registry tool — final stdout shape is up to your post-processing. Compare to the example output of the upstream registry tool listed in tools_referenced."
+    }
+  },
+  "$delta": "Smart still emits the upstream tool's schema for reference, but the schema_check.reason explicitly tells the model the validation was skipped because of post-processing. The model can compare its expected stdout (`MX`) against the upstream example (`country: '<ISO 3166-1 alpha-2 country code>'`) to verify it extracted the right field."
+}

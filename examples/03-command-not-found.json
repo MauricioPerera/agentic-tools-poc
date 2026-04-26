@@ -1,0 +1,19 @@
+{
+  "$comment": "Real output from: node client/exec-bash.ts \"curl https://api.example.com\"",
+  "$command": "curl https://api.example.com",
+  "$why_this_matters": "Mid-tier and small models hallucinate `curl` because it's the most common HTTP-fetching command in their training data. just-bash's sandbox doesn't include curl by default. Without a diagnostic, the model often retries the same approach with different URLs. With the diagnostic, it sees the actual catalog and switches to a registry skill (typically `ip-info` or `url2md`) on the next round.",
+  "raw": {
+    "exitCode": 127,
+    "stdout": "",
+    "stderr": "bash: curl: command not found"
+  },
+  "smart": {
+    "exitCode": 127,
+    "stdout": "",
+    "stderr": "bash: curl: command not found",
+    "diagnostics": [
+      "One of the commands does not exist. Available registry commands: dictionary, echo-pretty, github-repo-info, ip-info, url2md, weather. Standard tools: jq, grep, sed, awk, xargs, head, wc, tr."
+    ]
+  },
+  "$delta": "Raw output gives no signal about what IS available. Smart enumerates the full catalog so the model can pick a real alternative on the next round. Observed in Granite 4.0 H Micro Q3 composable: pivoted to ip-info on round 2 instead of trying another curl variant."
+}

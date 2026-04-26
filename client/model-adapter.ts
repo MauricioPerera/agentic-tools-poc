@@ -96,14 +96,51 @@ export function estimateTokens(messages: ChatMessage[], tools: unknown[] = []): 
 }
 
 /**
- * Returns the best available token count: model-reported when non-zero,
- * otherwise our estimate. Always returns a positive integer.
+ * Token usage broken into input (prompt) and output (completion).
+ *
+ * Pricing for most models is asymmetric (output is 2-10× input), so the
+ * token-count of "X total" hides the real cost story. Composable mode tends
+ * to ship less input (1 tool definition) but more output (longer bash
+ * commands); classic ships more input (N tool definitions) but less
+ * output (structured args). The honest cost answer needs both numbers.
+ */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  total: number;
+  /** True when these numbers come from our chars/4 fallback rather than model usage. */
+  estimated: boolean;
+}
+
+/**
+ * Best-effort token usage from a model reply. Uses model-reported counts
+ * when available (Granite, Gemma) and falls back to an estimate (Hermes
+ * zeroes out usage in beta).
+ *
+ * For the estimated case, we attribute the *delta* between the request
+ * messages (which include the prior assistant message that was just
+ * pushed) and just-the-new-content as input vs output. It's not perfect
+ * but it's directionally honest for cross-model comparisons.
  */
 export function tokensUsed(
   reply: NormalizedReply,
   requestMessages: ChatMessage[],
   requestTools: unknown[],
-): number {
-  if (reply.reportedTokens > 0) return reply.reportedTokens;
-  return estimateTokens(requestMessages, requestTools);
+): TokenUsage {
+  const reported = reply.usage;
+  if (reported && (reported.prompt_tokens ?? 0) > 0) {
+    const input  = reported.prompt_tokens     ?? 0;
+    const output = reported.completion_tokens ?? 0;
+    return { input, output, total: input + output, estimated: false };
+  }
+  // Estimate path: input = the prompt we just sent; output = the model's reply
+  const input  = estimateTokens(requestMessages, requestTools);
+  // The reply isn't in requestMessages yet at this point, so reconstruct it
+  const replyMsg: ChatMessage = {
+    role: 'assistant',
+    content: reply.content,
+    ...(reply.tool_calls.length ? { tool_calls: reply.tool_calls } : {}),
+  };
+  const output = estimateTokens([replyMsg]);
+  return { input, output, total: input + output, estimated: true };
 }
