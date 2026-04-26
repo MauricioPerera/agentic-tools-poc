@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync,
-  cpSync,
+  cpSync, symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -69,6 +69,19 @@ function makeWorkspace(): string {
   });
   // Recreate the empty skills directory; tests fill it via writeSkill().
   mkdirSync(join(work, 'registry', 'skills'), { recursive: true });
+
+  // Symlink node_modules from the host repo so the workspace's
+  // scripts/manifest.ts can resolve `yaml` and friends. ESM resolution
+  // ignores NODE_PATH (it's CommonJS-only), so this is the cross-platform
+  // workaround that doesn't require copying ~200 MB of dependencies.
+  // 'junction' on Windows behaves like a directory symlink without needing
+  // admin rights; ignored on POSIX where the second arg is unused.
+  try {
+    symlinkSync(join(ROOT, 'node_modules'), join(work, 'node_modules'), 'junction');
+  } catch {
+    // POSIX: junction → 'dir'. Retry without the platform hint.
+    symlinkSync(join(ROOT, 'node_modules'), join(work, 'node_modules'), 'dir');
+  }
   return work;
 }
 
@@ -103,18 +116,13 @@ function writeBundle(work: string, slug: string, body: string): void {
 }
 
 function runManifest(work: string): { stdout: string; stderr: string; status: number } {
-  // Use the real node + manifest script. Set cwd to the workspace root so
-  // path resolution inside scripts/manifest.ts finds registry/ and dist/.
-  // node_modules is shared from the host repo via NODE_PATH so we don't
-  // have to npm-install per test.
-  const env = {
-    ...process.env,
-    NODE_PATH: join(ROOT, 'node_modules'),
-  };
+  // Use the real node + manifest script. cwd = workspace root so path
+  // resolution inside scripts/manifest.ts finds registry/ and dist/.
+  // node_modules was symlinked into the workspace by makeWorkspace(),
+  // so `import 'yaml'` etc. resolves normally via ESM rules.
   try {
     const stdout = execFileSync('node', ['scripts/manifest.ts'], {
       cwd: work,
-      env,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
