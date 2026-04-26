@@ -1,0 +1,42 @@
+slug: url2md
+name: URL to Markdown
+summary: Convert a public web URL to clean markdown via url2md.automators.work
+version: 1.0.0
+capabilities: [network, fetch, content, markdown]
+sideEffects: read
+inputSchema:
+  type: object
+  required: [url]
+  properties:
+    url:
+      type: string
+      description: "Absolute http(s) URL of a public page to convert."
+    raw:
+      type: boolean
+      default: false
+      description: "If true, convert the full page body instead of extracting the main article. Use as fallback when default extraction returns 422."
+outputSchema:
+  type: object
+  properties:
+    title:    { type: string,  description: "Page title extracted by the upstream service." }
+    source:   { type: string,  description: "The original URL that was fetched." }
+    markdown: { type: string,  description: "The page content as markdown." }
+    length:   { type: integer, description: "Character length of the markdown body." }
+networkPolicy:
+  allow: [url2md.automators.work]
+
+# Hermes (and similar 7B older models) over-fill optional schema fields and
+# may pass `raw: true` even when not needed. The override removes the
+# parameter entirely and the handler still auto-falls-back to raw=1 on 422.
+model_overrides:
+  hermes:
+    summary: |
+      Convert a public URL to markdown. Required: url (absolute http/https).
+      No other arguments — never invent flags. Service auto-handles extraction.
+    inputSchema:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: "Absolute http(s) URL of a public page to convert."

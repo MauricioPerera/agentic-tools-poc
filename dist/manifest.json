@@ -1,7 +1,7 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-26T00:23:20.440Z",
-  "commit": "0e35f99e50635dc568d1e221902c396efbe0aa0f",
+  "generatedAt": "2026-04-26T00:50:50.724Z",
+  "commit": "31b7f6fdc797686ff93af5f2f91fa5c9a22d5f4a",
   "tools": [
     {
       "slug": "echo-pretty",
@@ -105,6 +105,81 @@
         }
       },
       "source": "skills/ip-info.mjs"
+    },
+    {
+      "slug": "url2md",
+      "name": "URL to Markdown",
+      "summary": "Convert a public web URL to clean markdown via url2md.automators.work",
+      "version": "1.0.0",
+      "capabilities": [
+        "network",
+        "fetch",
+        "content",
+        "markdown"
+      ],
+      "sideEffects": "read",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Absolute http(s) URL of a public page to convert."
+          },
+          "raw": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, convert the full page body instead of extracting the main article. Use as fallback when default extraction returns 422."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Page title extracted by the upstream service."
+          },
+          "source": {
+            "type": "string",
+            "description": "The original URL that was fetched."
+          },
+          "markdown": {
+            "type": "string",
+            "description": "The page content as markdown."
+          },
+          "length": {
+            "type": "integer",
+            "description": "Character length of the markdown body."
+          }
+        }
+      },
+      "requiredEnv": [],
+      "networkPolicy": {
+        "allow": [
+          "url2md.automators.work"
+        ]
+      },
+      "model_overrides": {
+        "hermes": {
+          "summary": "Convert a public URL to markdown. Required: url (absolute http/https).\nNo other arguments — never invent flags. Service auto-handles extraction.\n",
+          "inputSchema": {
+            "type": "object",
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Absolute http(s) URL of a public page to convert."
+              }
+            }
+          }
+        }
+      },
+      "source": "skills/url2md.mjs"
     }
   ]
 }
