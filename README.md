@@ -791,12 +791,20 @@ that imports `node:fs` (regression test in `test/skill-linter.test.ts`).
 ## Status
 
 Source-of-truth + execution
-- ✅ Phase 1 trusted execution via dynamic `import()` of bundle code
+- ✅ **Phase 2 sandboxed execution via QuickJS** (`client/sandbox.ts`,
+   uses `quickjs-emscripten`). Handlers run inside a WASM-isolated VM
+   with no Node API surface — `node:fs` is undefined, `process` is
+   undefined, `globalThis.fetch` is the bridge that goes through
+   `ctx.fetch` on the host (allowlist-gated). Interrupt handler kills
+   runaway loops at the configured deadline. Performance: 134 ms cold
+   start (one-time WASM init), 7.7 ms warm avg per call.
+- ✅ Trust-mode escape hatch (`LOADER_MODE=trust`) for local debugging
+   only; production / MCP servers default to sandbox.
 - ✅ TypeScript end-to-end (handlers, scripts, tests; strict mode)
 - ✅ Codegen: `tool.yaml` → `src/types.gen.ts` (handlers import generated types)
 - ✅ Drift detection: `npm run codegen:check` gates CI
 - ✅ **Bundle integrity: per-bundle sha256 in `manifest.json`, verified by
-   loader before `import()`** (see [THREAT-MODEL.md](./THREAT-MODEL.md) V1)
+   loader before sandboxing** (see [THREAT-MODEL.md](./THREAT-MODEL.md) V1)
 
 Runtime
 - ✅ Composable MCP server (one `bash` tool + `tool_schema` introspection)
@@ -813,7 +821,7 @@ Runtime
    `compare.ts` reports input/output split + USD cost per query
 
 Quality
-- ✅ 224 tests (`node:test`, zero extra deps)
+- ✅ 241 tests (`node:test`, zero extra deps)
    — unit tests for every parser, converter, and lint rule
    — 18 MCP wire-format integration tests (spawn server subprocess)
    — codegen drift integration test (catches stale generated types in CI)
@@ -822,9 +830,14 @@ Quality
    — pricing math + cost-formatting tests
    — V5 untrusted-output suite: ANSI strip, control-char strip, cap math,
      wrapper format, slug-aware lookup
+   — **sandbox suite (14 tests)**: parity for all 6 shipped skills inside
+     QuickJS, security boundary (node:fs undefined, process undefined,
+     env-leak, infinite-loop interrupt, network policy), bridge
+     correctness (ctx.log, error propagation, non-JSON return)
 - ✅ Skill linter with 9 semantic rules derived from the empirical A/B
    (8 shape + 1 security: `forbidden-imports` blocks `node:fs`,
-   `node:child_process`, `process.env`, etc.), 36 unit tests
+   `node:child_process`, `process.env`, etc. — defence-in-depth with the
+   sandbox), 36 unit tests
 - ✅ smoke-test-skills.ts hits live upstream APIs (5/5 passing today)
 
 Distribution
@@ -849,14 +862,16 @@ Validated
 
 Security posture
 - ✅ V1 (hostile bundle to dist branch): mitigated by sha256 + CI gates
-- 🟡 V2 (malicious skill author): linter rule R9 `forbidden-imports`
-   blocks merge on `node:fs`, `node:child_process`, `node:net`,
-   `process.env`, etc. (static, regex-based — defeats accidental misuse
-   and the lazy attacker; runtime guarantee waits on Phase 2 sandbox,
-   tracked at [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1))
+- ✅ **V2 (malicious skill author): closed at runtime via QuickJS
+   sandbox.** `import('node:fs')` returns undefined inside the VM;
+   `process` is undefined; `globalThis.fetch` is the curated bridge
+   that gates by `networkPolicy.allow`. Linter R9 `forbidden-imports`
+   still runs at PR time as defence-in-depth. Interrupt handler kills
+   handlers past `timeoutMs`. (Closes
+   [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1).)
 - ✅ V3 (dependency confusion): `npm ci` + zero runtime deps in skills
 - ⚠️ V4 (network attacker): TLS + sha256 protects bundles, manifest
-   signing pending in Phase 2
+   signing pending
 - 🟡 V5 (prompt injection in skill output): **strawman shipped** —
    skill output wrapped in `<skill-output skill="X" trust="untrusted">`,
    per-skill `outputCap` (url2md → 4 KB), ANSI/control-char strip,
@@ -866,9 +881,9 @@ Security posture
    visible in traces
 
 Not yet (with tracking issues)
-- ⏭ [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)
-   QuickJS sandbox for handler execution — closes V2 (real, runtime)
 - ⏭ Manifest signing (ed25519) — closes V4
+- ⏭ Per-skill capability flags (`network`, `env`, future `crypto`) +
+   memory cap per VM — Phase 3 hardening on top of the V2 sandbox
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs
 - ⏭ [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2)
    Per-skill versioning — pin one skill at known-good while others move

@@ -11,15 +11,16 @@ makes specific assumptions that this document makes explicit.
 
 ## TL;DR
 
-| Posture | Phase 1 (current) | Phase 2 (planned) |
+| Posture | Phase 2 (current) | Phase 3 (planned) |
 |---|---|---|
 | Skill source | Author-controlled GitHub repo, code-reviewed via PR | Same + signed metadata |
-| Skill execution | In-process `import()` of bundle via `data:` URL | QuickJS sandbox ([#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)) |
-| Trust assumption | Every skill author is trusted | Skills are untrusted by default |
-| Bundle integrity | sha256 in manifest, verified before `import()` | Same + ed25519 signature on manifest |
-| Network gating | `ctx.fetch` whitelist by host | Same + outbound policy enforced by sandbox |
-| Filesystem access | Linter R9 flags `node:fs` etc. (static); no runtime block | Sandbox blocks all node: imports |
-| Skill output (V5) | Delimiter wrap + per-skill `outputCap` + ANSI strip | Same + sandbox-enforced cap on handler return |
+| Skill execution | **QuickJS sandbox via `quickjs-emscripten` — runtime block of node APIs** | Same + per-skill capability flags |
+| Trust assumption | Skills run untrusted-by-default; trust mode is opt-in (`LOADER_MODE=trust`) | Same |
+| Bundle integrity | sha256 in manifest, verified before sandboxing | Same + ed25519 signature on manifest |
+| Network gating | `ctx.fetch` whitelist by host, enforced on host side of bridge | Same + per-skill outbound budgets |
+| Filesystem access | **Sandbox: `node:fs` returns undefined inside VM**; linter R9 also blocks at PR time | Same |
+| Skill output (V5) | Delimiter wrap + per-skill `outputCap` + ANSI strip | Same + structured-output channel that bypasses delimiter |
+| CPU exhaustion | **Sandbox interrupt handler kills handlers past `timeoutMs` (5s default)** | Same + memory cap |
 
 If you run this registry as-is for an external/untrusted agent, **Phase 1
 gives you the same trust posture as `npm install`** — you trust the
@@ -86,35 +87,49 @@ looks benign but exfiltrates env vars on first call. The PR passes lint
 + tests because the malicious behaviour only fires under specific input
 conditions or after a delay. A reviewer skims the diff and merges.
 
-**Phase 1 mitigation**:
+**Phase 2 mitigation** (shipped — closes V2 with a runtime guarantee):
+- **Handlers run inside a QuickJS WASM sandbox** (`client/sandbox.ts`).
+  `import('node:fs')` returns undefined; `process` is undefined;
+  `globalThis.fetch` is the curated bridge that goes through `ctx.fetch`
+  on the host side (which the loader gates with `networkPolicy.allow`).
+  No node API surface is reachable from inside the VM.
+- **Curated context surface** (everything else is unreachable):
+  - `globalThis.fetch(url, init?)` — proxied to host with allowlist
+  - `ctx.fetch` — alias of the same proxy
+  - `ctx.log(msg)` — writes to the host's stderr
+  - `ctx.env[key]` — pre-filtered by the skill's `requiredEnv`
+  - `URL` / `URLSearchParams` (polyfilled — QuickJS core lacks them)
+  - all standard ES2023 built-ins (JSON, RegExp, Math, Date, Symbol, …)
+- **Interrupt handler** breaks out of busy loops past the deadline
+  (`timeoutMs`, default 5000 ms). `while(true){}` no longer hangs the
+  host process.
+- **Belt-and-suspenders**: the linter's R9 `forbidden-imports` rule
+  still runs at PR time. It catches accidents before they reach CI;
+  the sandbox catches anything that slips through.
 - Every PR runs the full pipeline (`typecheck → tests → validate → lint
   → codegen:check → build → manifest`) via
   `.github/workflows/validate-pr.yml`.
-- The skill linter now ships **R9 `forbidden-imports`** which scans
-  handler source for `node:fs`, `node:fs/promises`,
-  `node:child_process`, `node:net`, `node:tls`, `node:dgram`, `node:dns`,
-  `node:vm`, `node:worker_threads`, `node:cluster`, `node:os`,
-  `node:process`, and direct `process.env` reads. Findings are
-  **errors** that block merge in CI (`scripts/lint.ts`).
-- `tool.yaml.networkPolicy.allow` declares which hosts the skill can
-  reach via `ctx.fetch`. The loader enforces this.
 
-**Phase 1 limitation** (still partly open):
-- The `forbidden-imports` linter is a **static, regex-based scan** —
-  motivated bypass is trivial: `import(\`no\${'de'}:fs\`)`,
-  `eval('require("node:fs")')`, fetch + `new Function(...)`, etc. The
-  rule catches the lazy attacker and the accidental case (developer
-  copy-pastes example code). It does not provide a runtime guarantee.
-- The seven other lint rules check shape, not intent.
+**Phase 2 limitation**:
+- A handler can still consume CPU up to the timeout (default 5s) and
+  memory up to whatever QuickJS allocates before host OOM. Neither is
+  catastrophic for an interactive agent loop, but a malicious skill in
+  a serverless environment could rack up bills before being killed.
+  Phase 3 plans memory caps + per-call latency budgets.
+- The bridge is intentionally minimal. A handler that needs e.g.
+  filesystem access (current Phase 2 has none) would have to go
+  through a future curated `ctx.storage` API.
+- An escape hatch exists for local debugging: `LOADER_MODE=trust`
+  reverts to the Phase 1 in-process `import()`. This is documented as
+  development-only and never used by the MCP servers in default mode.
 
-**Phase 2 plan** (tracked in [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)):
-- Move execution to QuickJS (`quickjs-emscripten`). QuickJS has no node
-  API surface — `import('node:fs')` returns undefined there. The
-  handler can only do what the curated `ctx` exposes.
-- Network policy enforced by the sandbox (not by handler convention).
-- Curated context surface decision: `fetch` (allowlisted), `env`
-  (filtered), `log`, `crypto.subtle`, `URL`/`URLSearchParams`,
-  `TextEncoder/Decoder`. Anything else opt-in per skill.
+**Phase 3 plan**:
+- Per-skill capability flags in `tool.yaml`:
+  `capabilities: [network, env]` — the loader exposes only what's
+  declared. Default is the empty set (pure transforms only).
+- Memory cap per VM via `runtime.setMemoryLimit`.
+- Optional `crypto.subtle`, `TextEncoder/Decoder` exposed when the
+  skill declares them (currently no skill needs them).
 
 ### V3 — Dependency confusion / supply-chain attack
 
@@ -253,16 +268,15 @@ loader's `sha256` check catches the latter at import time.
 
 - **Manifest signing** — V1 and V4 mitigations rely on this. Spec
   pending.
-- **QuickJS migration** — V2 mitigation requires moving handler
-  execution off the host process. Tracked at
-  [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1).
 - **Public key distribution** — once manifest signing exists, where
   does the public key live? Probably committed in `main` and pinned in
   the loader, with a documented rotation policy.
-- **Per-skill capabilities** — beyond `networkPolicy.allow` and
-  `outputCap`, future skills may want filesystem allowlists, env
-  allowlists, `injectionRisk` tagging, etc. Already partially covered
-  by `requiredEnv` but not enforced at sandbox level.
+- **Per-skill capability flags** — `tool.yaml` should declare which
+  capabilities the sandbox exposes (`network`, `env`, future
+  `crypto`). Default empty set = pure transforms only. The bridge
+  conditionally provides those slots. (Phase 3.)
+- **Memory cap per VM** — currently a malicious handler can allocate
+  until host OOM. Hook `runtime.setMemoryLimit`. (Phase 3.)
 - **Per-skill versioning** — pin a single skill at a known-good version
   while the rest of the registry advances. Tracked at
   [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2).
@@ -281,3 +295,14 @@ loader's `sha256` check catches the latter at import time.
   work (real V2 sandbox, per-skill versioning) tracked as
   [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1) and
   [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2).
+- 2026-04-26 — **V2 closed (runtime guarantee)**. Handlers now run
+  inside QuickJS via `quickjs-emscripten`. `node:fs`, `process`,
+  `child_process`, raw sockets — all unreachable from the VM. Bridge
+  surface is `globalThis.fetch` (allowlist-gated on host),
+  `ctx.log`, `ctx.env` (pre-filtered), `URL`/`URLSearchParams`
+  (polyfilled), and ES2023 built-ins. Interrupt handler kills runaway
+  loops at deadline. All 6 shipped skills + 8 security/bridge
+  regressions pass through the sandbox (14 tests in
+  `test/sandbox.test.ts`). Performance: 134 ms cold start
+  (one-time WASM init), 7.7 ms warm avg per call. Closes
+  [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1).

@@ -1,16 +1,24 @@
 /**
  * loader.ts — turns a remote registry manifest into just-bash custom commands.
  *
- * Trust model: phase 1 is "trusted" — bundles are imported via `data:` URL
- * and run in the host Node process with whatever capabilities we hand them
- * via `ctx`. This keeps the loader tiny and avoids QuickJS for the POC.
- * Phase 2 will swap import() for `js-exec` to sandbox community contributions.
+ * Trust model (Phase 2): handlers run inside a QuickJS sandbox via
+ * `runHandlerSandboxed` (see `client/sandbox.ts`). They have NO Node API
+ * surface — `import('node:fs')` is undefined, `process` is undefined,
+ * `globalThis.fetch` is the curated bridge that enforces
+ * `networkPolicy.allow`. The sandbox cannot reach the host filesystem,
+ * environment, or network except via that bridge.
+ *
+ * For local development convenience the loader supports `LOADER_MODE=trust`
+ * to fall back to in-process `import()` of a `data:` URL — same behaviour as
+ * Phase 1. This is for debugging only; production / CI / MCP servers default
+ * to the sandbox.
  */
 import { defineCommand } from 'just-bash';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgvAgainstSchema, coerceArgvValue } from './arg-parser.ts';
+import { runHandlerSandboxed } from './sandbox.ts';
 import type {
   BashResult,
   Manifest,
@@ -30,6 +38,8 @@ export const coerce    = coerceArgvValue;
 
 interface LoaderOptions {
   registry?: string | undefined;
+  /** Override the execution model. Defaults to env LOADER_MODE or 'sandbox'. */
+  mode?: 'sandbox' | 'trust';
 }
 
 interface LoadedRegistry {
@@ -67,6 +77,9 @@ async function readResource(url: string): Promise<string> {
 
 export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegistry> {
   const base = (opts.registry ?? DEFAULT_REGISTRY).replace(/\/$/, '');
+  const mode: 'sandbox' | 'trust' =
+    opts.mode ?? (process.env['LOADER_MODE'] === 'trust' ? 'trust' : 'sandbox');
+
   let manifest: Manifest;
   try {
     manifest = JSON.parse(await readResource(`${base}/manifest.json`)) as Manifest;
@@ -75,37 +88,56 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
     throw new Error(`Manifest load failed: ${msg}`);
   }
 
-  const handlerCache = new Map<string, SkillHandler>();
+  // Cache compiled-or-imported handlers per slug. For sandbox mode we cache
+  // the raw bundle source (sandbox.ts has its own compile-cache that keys by
+  // source). For trust mode we cache the imported module's default export.
+  const trustCache = new Map<string, SkillHandler>();
+  const bundleCache = new Map<string, string>();
+
+  async function getBundle(tool: SkillDef): Promise<string> {
+    if (bundleCache.has(tool.slug)) return bundleCache.get(tool.slug)!;
+    const code = await readResource(`${base}/${tool.source}`);
+    // Integrity check: when the manifest declares a sha256, refuse to load a
+    // bundle whose contents don't match. Same defence-in-depth as Phase 1
+    // (the sandbox doesn't replace the integrity check; it complements it).
+    if (tool.sha256) {
+      const actual = createHash('sha256').update(code, 'utf8').digest('hex');
+      if (actual !== tool.sha256) {
+        throw new Error(
+          `bundle integrity check failed: ${tool.source} has sha256 ${actual.slice(0, 16)}… ` +
+          `but manifest expected ${tool.sha256.slice(0, 16)}…. Refusing to load.`,
+        );
+      }
+    }
+    bundleCache.set(tool.slug, code);
+    return code;
+  }
 
   const commands = manifest.tools.map((tool) =>
     defineCommand(tool.slug, async (args: string[], ctx: BashCommandContext): Promise<BashResult> => {
       try {
         const input = parseArgvAgainstSchema(args, ctx.stdin, tool.inputSchema);
-
-        if (!handlerCache.has(tool.slug)) {
-          const code = await readResource(`${base}/${tool.source}`);
-          // Integrity check: when the manifest declares a sha256, refuse to
-          // import a bundle whose contents don't match. Defends against:
-          //   - hostile commits to the dist branch / forks
-          //   - jsDelivr cache poisoning of an old hash
-          //   - accidental truncation / corruption in transit
-          if (tool.sha256) {
-            const actual = createHash('sha256').update(code, 'utf8').digest('hex');
-            if (actual !== tool.sha256) {
-              throw new Error(
-                `bundle integrity check failed: ${tool.source} has sha256 ${actual.slice(0, 16)}… ` +
-                `but manifest expected ${tool.sha256.slice(0, 16)}…. Refusing to load.`,
-              );
-            }
-          }
-          const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
-          const mod = (await import(dataUrl)) as { default: SkillHandler };
-          handlerCache.set(tool.slug, mod.default);
-        }
-
-        const handler = handlerCache.get(tool.slug)!;
         const toolCtx = makeToolCtx(tool, ctx);
-        const output = await handler(input, toolCtx);
+        const code = await getBundle(tool);
+
+        let output: unknown;
+        if (mode === 'sandbox') {
+          const r = await runHandlerSandboxed(code, input, toolCtx);
+          if (!r.ok) {
+            const tag = r.isViolation ? 'sandbox-violation' : 'handler-error';
+            return { stdout: '', stderr: `${tool.slug} [${tag}]: ${r.error}\n`, exitCode: 1 };
+          }
+          output = r.value;
+        } else {
+          // trust mode (LOADER_MODE=trust) — Phase 1 behaviour, debug only.
+          if (!trustCache.has(tool.slug)) {
+            const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
+            const mod = (await import(dataUrl)) as { default: SkillHandler };
+            trustCache.set(tool.slug, mod.default);
+          }
+          const handler = trustCache.get(tool.slug)!;
+          output = await handler(input, toolCtx);
+        }
         return { stdout: JSON.stringify(output) + '\n', stderr: '', exitCode: 0 };
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
