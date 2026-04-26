@@ -16,7 +16,8 @@
     "mcp:classic:test": "node client/test-mcp-classic.mjs",
     "agent:granite": "node client/agent-granite.mjs",
     "compare": "node client/compare.mjs",
-    "exec": "node client/exec-bash.mjs"
+    "exec": "node client/exec-bash.mjs",
+    "discover": "node client/load-domain.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

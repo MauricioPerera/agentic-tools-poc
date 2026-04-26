@@ -406,17 +406,69 @@ The repo lets you flip with zero code changes: just point your MCP host
 at `mcp-server.mjs` (composable) or `mcp-server-classic.mjs` (classic),
 or both side-by-side under different names.
 
+## Compatibility with proposed `llms.txt ## Skills` extension
+
+There is a parallel proposal to extend the [llms.txt](https://llmstxt.org)
+spec with an optional `## Skills` section letting any static site declare
+the SKILL.md files an agent should load to interact with it:
+
+- **RFC** (v0.2): https://img.automators.work/docs/rfc-skills-in-llms-txt.md
+- **Issue** at AnswerDotAI/llms-txt: https://github.com/AnswerDotAI/llms-txt/issues/116
+
+This repo includes the **first independent consumer** of that proposed
+format. Use it against any site that publishes a `## Skills` section:
+
+```bash
+$ node client/load-domain.mjs https://img.automators.work
+
+══ https://img.automators.work ═════════════════════════════════
+llms.txt:  https://img.automators.work/llms.txt
+Skills:    1
+
+══ placeholder v1.0.0 ══════════════════════════════════════════
+description: Generate SVG placeholder images for UI mockups via the placeholder-img HTTP API.
+source:      https://img.automators.work/skills/placeholder/SKILL.md
+license:     MIT
+homepage:    https://img.automators.work
+body:        2872 chars
+
+$ node client/load-domain.mjs https://docs.anthropic.com
+
+══ https://docs.anthropic.com ══════════════════════════════════
+llms.txt:  https://docs.anthropic.com/llms.txt
+Skills:    0
+
+No `## Skills` section found in llms.txt at https://docs.anthropic.com/llms.txt.
+See https://github.com/AnswerDotAI/llms-txt/issues/116 for the proposed format.
+```
+
+The loader (`client/llms-txt-loader.mjs`) implements RFC §2.1 (parsing) and
+§2.3 steps 1-4 (discovery + surfacing). Steps 5-7 (user opt-in, load,
+cache) belong to the agent host that consumes the loader's output.
+
+It also handles:
+
+- Cross-origin `SKILL.md` URLs (RFC §2.1 rule 5)
+- Optional inline metadata (`<!-- skill: {"version":"…", "sha256":"…"} -->`)
+- sha256 verification when declared (RFC §2.2)
+- Graceful skip of `.zip` / `.tar.gz` archives (out of scope for v1)
+- Negative path: domains without `## Skills` get a friendly hint pointing
+  to the proposal issue, evangelizing adoption while degrading cleanly
+
 ## Status
 
 - ✅ Phase 1: trusted in-process execution via dynamic `import()`.
 - ✅ MCP server (composable) with `bash` + `tool_schema`.
 - ✅ MCP server (classic) with one tool per registry entry.
 - ✅ Smart-bash observation contract (schema + diagnostics + jq_paths).
-- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro and
-  Hermes 2 Pro Mistral 7B.
-- ✅ Composable vs classic A/B benchmark across both models.
-- ✅ `model-adapter.mjs` normalizes Workers AI per-model response shapes
-  (Granite OpenAI-style, Hermes legacy `result.response` shape).
+- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro,
+  Hermes 2 Pro Mistral 7B, and Gemma 4 26B-a4b-it.
+- ✅ Composable vs classic A/B benchmark across all three models.
+- ✅ Per-model skill tuning rescues weak models (Hermes 1-3/6 → 5+/6).
+- ✅ `model-adapter.mjs` normalizes Workers AI per-model response shapes.
+- ✅ `client/llms-txt-loader.mjs` — first independent consumer of the
+  proposed `llms.txt ## Skills` extension
+  ([Issue #116](https://github.com/AnswerDotAI/llms-txt/issues/116)).
 - ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
   community-contributed tools.
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.

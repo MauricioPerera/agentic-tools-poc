@@ -234,14 +234,46 @@ It is:
   per-model tuning, recovery patterns, and meta-knowledge as one
   artifact in your version-controlled repository.
 
+## Related external work
+
+This project converged independently on the same architectural posture as
+two parallel proposals from the same author working from the **provider**
+side of the same problem:
+
+- **RFC: Publishing Agent Skills through `llms.txt`** —
+  [img.automators.work/docs/rfc-skills-in-llms-txt.md](https://img.automators.work/docs/rfc-skills-in-llms-txt.md).
+  Formalizes a `## Skills` section in `llms.txt` so any static site can
+  declare which `SKILL.md` files an agent should load to interact with it.
+  Argues the same case from the publisher angle: MCP is overkill for static
+  sites; text files are sufficient; ownership of the consumption shape
+  belongs to the agent author.
+- **Issue #116** at AnswerDotAI/llms-txt —
+  [github.com/AnswerDotAI/llms-txt/issues/116](https://github.com/AnswerDotAI/llms-txt/issues/116).
+  The proposal upstream to the official llms.txt spec.
+
+This repo is the **agent-side counterpart** of those two:
+
+| Side | Concern | Artifact |
+|---|---|---|
+| Provider | "How do I declare what an agent can do with my site?" | RFC + Issue #116 |
+| Consumer (us) | "How do I build an agent that owns its skill catalog and uses skills published this way?" | This repo |
+
+`client/llms-txt-loader.mjs` is the first independent consumer of the
+proposed `## Skills` extension. Run `node client/load-domain.mjs <domain>`
+against any compliant site to see discovery flow §2.3 in action.
+
 ## Further reading
 
 - [README](./README.md) — usage, A/B benchmark numbers, MCP host
   configuration.
 - [registry/skills/](./registry/skills/) — example skills (`echo-pretty`,
-  `ip-info`) demonstrating the five layers.
+  `ip-info`, `url2md`) demonstrating the five layers.
 - [client/smart-bash.mjs](./client/smart-bash.mjs) — the recovery layer
   in code: enriched observations that teach a small model how to
   self-correct.
+- [client/skill-tuning.mjs](./client/skill-tuning.mjs) — per-model overrides
+  that rescue weak models without touching the underlying behaviour.
+- [client/llms-txt-loader.mjs](./client/llms-txt-loader.mjs) — discovery of
+  skills published via the proposed `## Skills` extension.
 - [client/compare.mjs](./client/compare.mjs) — the measurement loop that
   ownership of the skill catalog enables.
