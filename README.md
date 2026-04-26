@@ -403,6 +403,73 @@ MODEL=@cf/ibm-granite/granite-4.0-h-micro CF_ACCOUNT_ID=… CF_API_TOKEN=… nod
 MODEL=@hf/nousresearch/hermes-2-pro-mistral-7b CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.ts
 ```
 
+The same harness now also runs a 20-query suite organised into 6 buckets
+(see [`client/eval-suite.ts`](./client/eval-suite.ts)) so the comparison
+covers more than the original 3 queries. Pass it via `SUITE`:
+
+```bash
+# default — the original 3 queries (kept for back-compat with the tables below)
+SUITE=basic MODEL=… node client/compare.ts
+
+# the full 20-query suite across all 6 buckets
+SUITE=full  MODEL=… node client/compare.ts
+
+# just one bucket (handy for iterating on a single failure mode)
+SUITE=discipline MODEL=… node client/compare.ts
+```
+
+The 6 buckets each measure a different dimension of agent behaviour:
+
+| Bucket | What it stresses | Disciplined outcome |
+|---|---|---|
+| `single` (4 queries) | One skill invoked correctly | `via_tool` |
+| `chain-2` (3) | Output of one skill piped into another | `via_tool` |
+| `chain-multi` (2) | Composition discipline over 3+ steps | `via_tool` |
+| `error` (3) | Recovery, schema discovery, graceful "I cannot" | `via_tool` |
+| `discipline` (5) | **Answerable from training knowledge** — model should NOT call a tool | `without_tool` |
+| `ambiguous` (3) | Two or more skills could plausibly answer | `via_tool` |
+
+The `discipline` bucket inverts the success criterion: pass = answered
+correctly *without* invoking any skill. A model that calls `dictionary`
+to answer "what's 7 × 8?" is technically correct but disciplinarily
+gapped — the table marks it `⚠ via_tool` instead of `✓`. This is the
+distinction the previous A/B (3 queries, all via_tool desired) couldn't
+measure.
+
+The runner also emits a per-bucket pass-rate breakdown so a model's
+strengths and weaknesses are visible at a glance without reading every
+row:
+
+```
+Per-bucket pass rate (disciplined outcome):
+Bucket       | Composable     | Classic        | Notes
+-------------|----------------|----------------|----------------------------------
+single       |  4/ 4 (100%)   |  4/ 4 (100%)   | pass = answered VIA a tool
+chain-2      |  3/ 3 (100%)   |  2/ 3 ( 67%)   | pass = answered VIA a tool
+chain-multi  |  1/ 2 ( 50%)   |  2/ 2 (100%)   | pass = answered VIA a tool
+error        |  2/ 3 ( 67%)   |  3/ 3 (100%)   | pass = answered VIA a tool
+discipline   |  4/ 5 ( 80%)   |  3/ 5 ( 60%)   | pass = answered WITHOUT calling a tool
+ambiguous    |  2/ 3 ( 67%)   |  3/ 3 (100%)   | pass = answered VIA a tool
+```
+
+(numbers above are illustrative; real per-model bucket tables land
+once the full sweep runs)
+
+**Cost ballpark** for a full sweep (20 queries × 2 modes × ~5 rounds ×
+~500 tokens per round) per model:
+
+| Model | $/M in | $/M out | Sweep cost (rough) |
+|---|---:|---:|---:|
+| Granite 4.0 H Micro | $0.017 | $0.11 | ~$0.005 |
+| Hermes 2 Pro 7B (beta) | free | free | $0 |
+| Llama 3.1 8B fp8 | $0.15 | $0.29 | ~$0.04 |
+| Gemma 4 26B-a4b-it | $0.10 | $0.30 | ~$0.04 |
+| Qwen 2.5 Coder 32B | $0.66 | $1.00 | ~$0.20 |
+| **Total per full 5-model sweep** | | | **~$0.30** |
+
+Times: ~5–8 minutes per model on Workers AI free tier (latency-bound,
+not throughput-bound). Run all five sequentially in under an hour.
+
 ### Results — IBM Granite 4.0 H Micro (3.4B)
 
 | Query | Mode | Rounds | Tokens | Correct |

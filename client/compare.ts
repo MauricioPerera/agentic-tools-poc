@@ -23,6 +23,7 @@ import {
   outputCapForSkill,
   UNTRUSTED_OUTPUT_FRAGMENT,
 } from './untrusted-output.ts';
+import { selectSuite, type Bucket, type Query } from './eval-suite.ts';
 import type { ChatMessage, Manifest, NormalizedReply, ToolCall } from '../types/index.ts';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
@@ -35,29 +36,14 @@ if (!ACCOUNT || !TOKEN) {
   process.exit(2);
 }
 
-interface Query {
-  id: string;
-  text: string;
-  expect: RegExp;
+// Query corpus + bucket types live in client/eval-suite.ts so they're
+// importable by structural tests without pulling in the model-call surface.
+const SUITE = (process.env.SUITE ?? 'basic').toLowerCase();
+const QUERIES = selectSuite(SUITE);
+if (!QUERIES) {
+  console.error(`! SUITE="${SUITE}" matched no queries. Use: basic | full | single | chain-2 | chain-multi | error | discipline | ambiguous.`);
+  process.exit(2);
 }
-
-const QUERIES: Query[] = [
-  {
-    id: 'Q1-simple',
-    text: "Convert 'agentic tools poc' to uppercase. Reply with just the result.",
-    expect: /AGENTIC TOOLS POC/,
-  },
-  {
-    id: 'Q2-extract',
-    text: 'What ISO country code am I currently in? Reply with just the 2-letter code.',
-    expect: /^[A-Z]{2}$/m,
-  },
-  {
-    id: 'Q3-chain',
-    text: "Get my country code, then echo it back uppercased with prefix 'YOU ARE IN: '. Reply with just the result.",
-    expect: /YOU ARE IN: [A-Z]{2}/,
-  },
-];
 
 const { manifest: rawManifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
 const manifest = applyOverridesToManifest(rawManifest, MODEL);
@@ -106,12 +92,23 @@ interface RunResult {
   outcome: 'via_tool' | 'without_tool' | 'wrong_with_tool' | 'wrong_no_tool';
 }
 
-const results: Array<{ query: string; composable: RunResult; classic: RunResult }> = [];
+interface RowResult {
+  query: string;
+  bucket: Bucket;
+  expectNoTool: boolean;
+  composable: RunResult;
+  classic: RunResult;
+}
+const results: RowResult[] = [];
+
+console.log(`Suite: ${SUITE} (${QUERIES.length} quer${QUERIES.length === 1 ? 'y' : 'ies'})`);
 
 for (const q of QUERIES) {
-  console.log(`\n${'='.repeat(70)}\n${q.id}: ${q.text}\n${'='.repeat(70)}`);
+  console.log(`\n${'='.repeat(70)}\n${q.id} [${q.bucket}]: ${q.text}\n${'='.repeat(70)}`);
   results.push({
     query: q.id,
+    bucket: q.bucket,
+    expectNoTool: q.expectNoTool ?? false,
     composable: await runComposable(q),
     classic:    await runClassic(q),
   });
@@ -133,23 +130,39 @@ const OUTCOME_GLYPH: Record<RunResult['outcome'], string> = {
   wrong_no_tool:   '✗⊘',
 };
 
-console.log(`\n${'═'.repeat(108)}\nSUMMARY\n${'═'.repeat(108)}`);
-console.log('Query        | Mode       | Rounds | Calls |    In |   Out |   Total |    Cost  | Outcome      | Answer');
-console.log('-------------|------------|-------:|------:|------:|------:|--------:|---------:|--------------|---------');
+console.log(`\n${'═'.repeat(120)}\nSUMMARY (suite=${SUITE})\n${'═'.repeat(120)}`);
+console.log('Bucket       | Query              | Mode       | Rounds | Calls |    In |   Out |   Total |    Cost  | Outcome      | Answer');
+console.log('-------------|--------------------|------------|-------:|------:|------:|------:|--------:|---------:|--------------|---------');
+let lastBucket: string | null = null;
 for (const r of results) {
+  // Insert a separator between buckets so the eye can group rows.
+  if (r.bucket !== lastBucket) {
+    if (lastBucket !== null) console.log('-'.repeat(120));
+    lastBucket = r.bucket;
+  }
   for (const mode of ['composable', 'classic'] as const) {
     const x = r[mode];
     const total = x.inputTokens + x.outputTokens;
     const cost = x.costUSD === null ? '   n/a' : formatCost(x.costUSD).padStart(9);
-    const outcome = `${OUTCOME_GLYPH[x.outcome]} ${x.outcome}`.padEnd(13);
+    // For discipline-bucket queries, swap glyph semantics: without_tool is
+    // the desired outcome, via_tool is the discipline gap.
+    const isDisciplined = r.expectNoTool
+      ? (x.outcome === 'without_tool')
+      : (x.outcome === 'via_tool');
+    const baseGlyph = OUTCOME_GLYPH[x.outcome];
+    const noteGlyph = r.expectNoTool && x.outcome === 'via_tool'
+      ? '⚠'  // correct answer but reached for a tool unnecessarily
+      : (r.expectNoTool && x.outcome === 'without_tool' ? '✓' : baseGlyph);
+    const outcome = `${noteGlyph} ${x.outcome}${isDisciplined ? '' : ''}`.padEnd(13);
     console.log(
-      `${r.query.padEnd(12)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.toolCalls).padStart(5)} | ${String(x.inputTokens).padStart(5)} | ${String(x.outputTokens).padStart(5)} | ${String(total).padStart(7)} | ${cost} | ${outcome} | ${(x.finalAnswer || '').slice(0, 30)}`,
+      `${r.bucket.padEnd(12)} | ${r.query.padEnd(18)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.toolCalls).padStart(5)} | ${String(x.inputTokens).padStart(5)} | ${String(x.outputTokens).padStart(5)} | ${String(total).padStart(7)} | ${cost} | ${outcome} | ${(x.finalAnswer || '').slice(0, 30)}`,
     );
   }
 }
 console.log(
-  `\nLegend: ✓ via_tool (correct, used a tool)   ◷ without_tool (correct, no tool used — discipline gap)   ` +
-  `✗ wrong_with_tool   ✗⊘ wrong_no_tool`,
+  `\nLegend: ✓ disciplined outcome (via_tool for normal queries; without_tool for discipline-bucket)   ` +
+  `⚠ tool used when training-knowledge would suffice (discipline bucket only)   ` +
+  `✗ wrong answer.`,
 );
 
 interface ModeTotals {
@@ -191,6 +204,55 @@ for (const mode of ['composable', 'classic'] as const) {
     `correct=${correctAny}/${results.length} (via_tool=${t.via_tool}, without_tool=${t.without_tool})  ` +
     `wrong=${t.wrong_with_tool + t.wrong_no_tool}`,
   );
+}
+
+// ─── Per-bucket pass-rate breakdown ────────────────────────────────────────
+// "Pass" depends on the bucket's expectation:
+//   - normal buckets: outcome === 'via_tool' (correct AND used a tool)
+//   - discipline bucket: outcome === 'without_tool' (correct AND no tool used)
+// Anything else is a fail of some kind (wrong, or right-but-undisciplined).
+
+interface BucketScore {
+  bucket: Bucket;
+  total: number;
+  composablePass: number;
+  classicPass: number;
+}
+
+function isDisciplinedFor(r: RowResult, mode: 'composable' | 'classic'): boolean {
+  const outcome = r[mode].outcome;
+  return r.expectNoTool ? outcome === 'without_tool' : outcome === 'via_tool';
+}
+
+const bucketOrder: Bucket[] = ['single', 'chain-2', 'chain-multi', 'error', 'discipline', 'ambiguous'];
+const bucketScores: BucketScore[] = bucketOrder
+  .map<BucketScore | null>((bucket) => {
+    const rows = results.filter((r) => r.bucket === bucket);
+    if (rows.length === 0) return null;
+    return {
+      bucket,
+      total: rows.length,
+      composablePass: rows.filter((r) => isDisciplinedFor(r, 'composable')).length,
+      classicPass:    rows.filter((r) => isDisciplinedFor(r, 'classic')).length,
+    };
+  })
+  .filter((s): s is BucketScore => s !== null);
+
+if (bucketScores.length > 1) {
+  console.log('\nPer-bucket pass rate (disciplined outcome — see legend above):');
+  console.log('Bucket       | Composable     | Classic        | Notes');
+  console.log('-------------|----------------|----------------|----------------------------------');
+  for (const s of bucketScores) {
+    const cPct = ((s.composablePass / s.total) * 100).toFixed(0).padStart(3);
+    const kPct = ((s.classicPass    / s.total) * 100).toFixed(0).padStart(3);
+    const note = s.bucket === 'discipline'
+      ? 'pass = answered WITHOUT calling a tool'
+      : 'pass = answered VIA a tool';
+    console.log(
+      `${s.bucket.padEnd(12)} | ${String(s.composablePass).padStart(2)}/${s.total} (${cPct}%)    ` +
+      `| ${String(s.classicPass).padStart(2)}/${s.total} (${kPct}%)    | ${note}`,
+    );
+  }
 }
 
 const anyEstimated = results.some((r) => r.composable.anyEstimated || r.classic.anyEstimated);
