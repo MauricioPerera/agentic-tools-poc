@@ -1,7 +1,7 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-26T05:57:12.549Z",
-  "commit": "7fa67998b738badd2d869632ef1cdb675a596e8e",
+  "generatedAt": "2026-04-26T16:41:08.569Z",
+  "commit": "5cf231d6eb7405b52c6f2a14f362db6b5517620d",
   "tools": [
     {
       "slug": "dictionary",
@@ -67,7 +67,8 @@
         ]
       },
       "model_overrides": {},
-      "source": "skills/dictionary.mjs"
+      "source": "skills/dictionary.mjs",
+      "sha256": "c06b91fd3984849fcbd1edde634e6510d87854719c6e9ed7d1c15683990a9664"
     },
     {
       "slug": "echo-pretty",
@@ -122,7 +123,8 @@
         "allow": []
       },
       "model_overrides": {},
-      "source": "skills/echo-pretty.mjs"
+      "source": "skills/echo-pretty.mjs",
+      "sha256": "c05bd15d4c9e836c7478050fa093fee1733df77ec8b50a5078f02207f8514187"
     },
     {
       "slug": "github-repo-info",
@@ -194,7 +196,8 @@
         ]
       },
       "model_overrides": {},
-      "source": "skills/github-repo-info.mjs"
+      "source": "skills/github-repo-info.mjs",
+      "sha256": "dcfc5a5e1c6e633785bb24879dfbf2a6bead6e5b19f00cc262391f741b62f18f"
     },
     {
       "slug": "ip-info",
@@ -247,7 +250,8 @@
           ]
         }
       },
-      "source": "skills/ip-info.mjs"
+      "source": "skills/ip-info.mjs",
+      "sha256": "82aa951d78378f8cab2c1ce3b7149f8fa3637130f7a2186d7354828584c3ce4d"
     },
     {
       "slug": "url2md",
@@ -322,7 +326,8 @@
           }
         }
       },
-      "source": "skills/url2md.mjs"
+      "source": "skills/url2md.mjs",
+      "sha256": "5f24be1291dc290787d3a93af8331881f2a708b70efe4bd78f1604b049f91871"
     },
     {
       "slug": "weather",
@@ -388,7 +393,8 @@
         ]
       },
       "model_overrides": {},
-      "source": "skills/weather.mjs"
+      "source": "skills/weather.mjs",
+      "sha256": "857561ad45da6981f158223b3830f3c933852ab37542cfe27860044f56c71d77"
     }
   ]
 }
