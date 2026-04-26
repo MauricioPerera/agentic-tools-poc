@@ -7,6 +7,8 @@
  * Phase 2 will swap import() for `js-exec` to sandbox community contributions.
  */
 import { defineCommand } from 'just-bash';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { parseArgvAgainstSchema, coerceArgvValue } from './arg-parser.ts';
 import type {
   BashResult,
@@ -43,11 +45,34 @@ interface BashCommandContext {
   stderr?: { write?: (s: string) => void };
 }
 
+/**
+ * Read a manifest or bundle URL. Supports http(s) for normal use and
+ * file:// (or bare paths) for local development and integration tests
+ * — the latter so the test harness can spin up MCP servers without
+ * standing up an HTTP server just to serve dist/.
+ */
+async function readResource(url: string): Promise<string> {
+  if (url.startsWith('file:')) {
+    return await readFile(fileURLToPath(url), 'utf8');
+  }
+  if (url.startsWith('/') || url.startsWith('./') || /^[a-zA-Z]:[\\/]/.test(url)) {
+    // POSIX absolute, relative, or Windows drive-letter path
+    return await readFile(url, 'utf8');
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url} → HTTP ${r.status}`);
+  return await r.text();
+}
+
 export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegistry> {
   const base = (opts.registry ?? DEFAULT_REGISTRY).replace(/\/$/, '');
-  const r = await fetch(`${base}/manifest.json`);
-  if (!r.ok) throw new Error(`Manifest fetch failed: ${r.status}`);
-  const manifest = (await r.json()) as Manifest;
+  let manifest: Manifest;
+  try {
+    manifest = JSON.parse(await readResource(`${base}/manifest.json`)) as Manifest;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Manifest load failed: ${msg}`);
+  }
 
   const handlerCache = new Map<string, SkillHandler>();
 
@@ -57,11 +82,7 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
         const input = parseArgvAgainstSchema(args, ctx.stdin, tool.inputSchema);
 
         if (!handlerCache.has(tool.slug)) {
-          const url = `${base}/${tool.source}`;
-          const code = await fetch(url).then((res) => {
-            if (!res.ok) throw new Error(`Bundle fetch failed: ${res.status}`);
-            return res.text();
-          });
+          const code = await readResource(`${base}/${tool.source}`);
           const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
           const mod = (await import(dataUrl)) as { default: SkillHandler };
           handlerCache.set(tool.slug, mod.default);

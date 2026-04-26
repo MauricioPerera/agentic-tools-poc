@@ -60,7 +60,7 @@ client/
   mcp-server-classic.ts          classic MCP server (one tool per skill)
   agent-granite.ts               Workers AI agent loop driver
   compare.ts                     A/B harness: composable vs classic, same queries
-  demo.ts / test-mcp.ts          bash + MCP integration tests
+  demo.ts                        local bash composition demo (no MCP)
 test/*.test.ts                   91 unit tests (node:test, no extra deps)
 dist/                            generated, committed, served by jsDelivr
 tsconfig.json                    strict TS, NodeNext, allowImportingTsExtensions
@@ -139,8 +139,17 @@ To pin a specific registry version, add an env var:
 
 ### Local testing
 
+`npm test` includes wire-format integration tests for both MCP servers
+(`test/mcp-server.test.ts` and `test/mcp-server-classic.test.ts`) that
+spawn the server as a subprocess, drive it with the official MCP Client
+SDK, and assert tool listings, call shapes, and error paths. They use
+the local `dist/` (via the loader's `file://` support) so they run
+offline and deterministically.
+
+Run them by themselves:
+
 ```bash
-npm run mcp:test   # spawns the server + drives it as an MCP client
+node --test --test-reporter=spec test/mcp-server.test.ts test/mcp-server-classic.test.ts
 ```
 
 ## Validated against Cloudflare Workers AI / Granite 4.0 H Micro
