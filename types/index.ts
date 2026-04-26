@@ -202,5 +202,5 @@ export interface DomainSkillsResult {
 // Internal helpers
 
 /** A function that takes a tool_call and returns whatever observation shape
- *  the caller's loop expects. Used by compare.mjs's runLoop signature. */
+ *  the caller's loop expects. Used by compare.ts's runLoop signature. */
 export type ToolExecutor = (tc: ToolCall) => Promise<unknown>;

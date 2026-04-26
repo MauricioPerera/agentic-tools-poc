@@ -1,8 +1,8 @@
 /**
- * arg-parser.test.mjs — covers the parsers consolidated in client/arg-parser.mjs.
+ * arg-parser.test.ts — covers the parsers consolidated in client/arg-parser.ts.
  *
  * The argv-side functions (parseArgvAgainstSchema, coerceArgvValue) are
- * already exhaustively tested via the loader.test.mjs re-exports. Here we
+ * already exhaustively tested via the loader.test.ts re-exports. Here we
  * focus on the model-side ones (parseToolCallArguments, inputToArgv) plus
  * cross-roundtrip tests showing argv ↔ input conversion is consistent.
  */

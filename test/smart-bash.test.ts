@@ -1,5 +1,5 @@
 /**
- * smart-bash.test.mjs — unit tests for the observation enricher.
+ * smart-bash.test.ts — unit tests for the observation enricher.
  *
  * Pins the diagnostic patterns so future changes don't silently break the
  * model-rescue contract that took 1-3/6 → 5+/6 on Hermes.

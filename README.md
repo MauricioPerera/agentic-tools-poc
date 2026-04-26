@@ -6,10 +6,11 @@ distributed via **jsDelivr** as a free global CDN, and executed by
 [**just-bash**](https://github.com/vercel-labs/just-bash) — Vercel's virtual
 bash environment for agents.
 
-Codebase: ~2400 LOC of strict TypeScript, runs natively on Node 22+ via
-type-stripping (no build step for execution). 91 unit tests via `node:test`.
-Zero runtime dependencies beyond `just-bash`, `@modelcontextprotocol/sdk`,
-and `yaml`.
+Codebase: ~5,200 LOC of strict TypeScript, runs natively on Node 22+ via
+type-stripping (no build step for execution). 160 tests via `node:test`,
+including wire-format MCP integration suites that spawn the actual server
+subprocesses. Zero runtime dependencies beyond `just-bash`,
+`@modelcontextprotocol/sdk`, and `yaml`.
 
 The premise: **agent capabilities are skills, not tools**. Skills are owned
 by the agent's author and carry not just the function but its context,
@@ -39,54 +40,96 @@ Pin a release: replace `@dist` with `@<commit-sha>` (always available) or
 ## Repo layout
 
 ```
-types/index.ts                shared TypeScript types (Skill, Manifest, Observation, …)
+types/index.ts                  shared TypeScript types (Skill, Manifest,
+                                Observation, NormalizedReply, …)
 registry/skills/<slug>/
-  tool.yaml                   metadata + JSONSchema (input/output) for the skill
-  src/index.ts                typed handler: SkillHandler<Input, Output>
-  README.md                   human + agent-facing docs (the context layer)
-schema/skill.schema.ts        shared validator (CI linter + runtime)
+  tool.yaml                     metadata + JSONSchema (input/output)
+  src/index.ts                  typed handler: SkillHandler<Input, Output>
+  src/types.gen.ts              auto-generated Input/Output from tool.yaml
+  README.md                     human + agent-facing docs (the context layer)
+
+schema/skill.schema.ts          structural SKILL_SCHEMA + tiny validator
 scripts/
-  validate.ts                 lints every tool.yaml against SKILL_SCHEMA
-  build.ts                    esbuild-bundles each src/ → dist/skills/<slug>.mjs
-  manifest.ts                 emits dist/manifest.json
+  validate.ts                   structural lint of every tool.yaml
+  lint.ts                       semantic lint (8 rules from empirical A/B)
+  codegen-types.ts              tool.yaml → src/types.gen.ts (+ --check mode)
+  build.ts                      esbuild-bundles each src/ → dist/skills/<slug>.mjs
+  manifest.ts                   emits dist/manifest.json
+  smoke-test-skills.ts          live test of network-using skills (npm run smoke)
+
 client/
-  arg-parser.ts                  argv↔input + tool_call.arguments parsers
-  loader.ts                      fetches manifest, registers each skill as a just-bash command
-  smart-bash.ts                  recovery layer: enriched observations with schema + diagnostics
-  skill-tuning.ts                applies per-model overrides + system_prompt_fragments
-  model-adapter.ts               normalizes Workers AI per-model response shapes
-  llms-txt-loader.ts             consumer of the proposed `## Skills` extension
-  mcp-server.ts                  composable MCP server (one `bash` tool)
-  mcp-server-classic.ts          classic MCP server (one tool per skill)
-  agent-granite.ts               Workers AI agent loop driver
-  compare.ts                     A/B harness: composable vs classic, same queries
-  demo.ts                        local bash composition demo (no MCP)
-test/*.test.ts                   91 unit tests (node:test, no extra deps)
-dist/                            generated, committed, served by jsDelivr
-tsconfig.json                    strict TS, NodeNext, allowImportingTsExtensions
+  loader.ts                     fetches manifest, registers each skill as a
+                                just-bash command (file:// + http(s) supported)
+  arg-parser.ts                 argv↔input + tool_call.arguments parsers
+  smart-bash.ts                 enriched observations: schema + diagnostics
+  skill-tuning.ts               per-model overrides + system_prompt_fragments
+  skill-linter.ts               8 lint rules as pure functions
+  jsonschema-to-ts.ts           the converter behind codegen
+  model-adapter.ts              normalizes Workers AI per-model response shapes
+  llms-txt-loader.ts            consumer of the proposed `## Skills` extension
+  mcp-server.ts                 composable MCP server (one `bash` tool)
+  mcp-server-classic.ts         classic MCP server (one tool per skill)
+  agent-granite.ts              Workers AI agent loop driver
+  compare.ts                    A/B harness: composable vs classic, same queries
+  exec-bash.ts                  single-command CLI wrapper for external loops
+  load-domain.ts                CLI for the llms.txt ## Skills consumer
+  demo.ts                       local bash composition demo (no MCP)
+
+test/*.test.ts                  160 tests (node:test, zero extra deps)
+                                — unit + MCP wire-format integration + drift detection
+
+dist/                           generated by `npm run build`. Not tracked in
+                                main; CI publishes to the `dist` branch.
+
+.github/workflows/build.yml     runs `npm run all` on push to main and
+                                publishes dist/ to the `dist` branch via
+                                git worktree.
+.github/workflows/validate-pr.yml  runs the same pipeline on every PR.
+
+tsconfig.json                   strict TS, NodeNext, allowImportingTsExtensions
+.gitattributes                  LF-only line endings; marks dist/ + types.gen.ts
+                                as linguist-generated for cleaner GitHub diffs
 ```
 
 ## Local commands
 
 ```bash
 npm install
-npm run validate    # lint tool.yaml files
-npm run build       # bundle skills
-npm run manifest    # emit manifest.json
-npm run all         # validate + build + manifest
-npm run demo        # run the just-bash pipeline against published dist/
+
+# Pipeline (npm run all chains all 7 in order):
+npm run typecheck       # tsc --noEmit
+npm test                # 160 unit + integration tests
+npm run validate        # structural lint of tool.yaml files
+npm run lint            # semantic lint (8 rules) on every skill
+npm run codegen         # regenerate src/types.gen.ts from tool.yaml
+npm run codegen:check   # CI gate: fail if codegen would change anything
+npm run build           # esbuild-bundle each skill into dist/skills/<slug>.mjs
+npm run manifest        # emit dist/manifest.json
+npm run all             # all of the above, in order
+
+# Demos / one-shots:
+npm run demo            # local just-bash pipeline against the published dist/
+npm run smoke           # call every network-using skill against its real API
+npm run discover <url>  # llms.txt ## Skills consumer (RFC §2.3)
+npm run mcp:server      # start the composable MCP server (stdio)
+npm run mcp:classic     # start the classic MCP server (one tool per skill)
 ```
 
-## How a tool looks
+## How a skill looks
 
-```js
-// registry/skills/echo-pretty/src/index.mjs
-export default async function handler(input, ctx) {
+```typescript
+// registry/skills/echo-pretty/src/index.ts
+import type { SkillHandler } from '../../../../types/index.ts';
+import type { Input, Output } from './types.gen.ts';   // ← auto-generated
+
+const handler: SkillHandler<Input, Output> = async (input, ctx) => {
   let out = String(input.text ?? '');
   if (input.upper) out = out.toUpperCase();
   ctx.log(`produced ${out.length} chars`);
   return { text: out, length: out.length };
-}
+};
+
+export default handler;
 ```
 
 Every handler receives a curated `ctx` (`fetch` gated by the tool's
@@ -94,7 +137,7 @@ Every handler receives a curated `ctx` (`fetch` gated by the tool's
 
 ## MCP server
 
-`client/mcp-server.mjs` is a stdio Model Context Protocol server that exposes
+`client/mcp-server.ts` is a stdio Model Context Protocol server that exposes
 the registry to any MCP-compatible host (Claude Code, Cursor, Continue, etc).
 
 It exposes **two** tools, not N:
@@ -125,7 +168,7 @@ ip-info | jq -r '.country' | xargs -I {} echo-pretty --text "{}" --upper --prefi
   "mcpServers": {
     "agentic-tools": {
       "command": "node",
-      "args": ["<absolute path to repo>/client/mcp-server.mjs"]
+      "args": ["<absolute path to repo>/client/mcp-server.ts"]
     }
   }
 }
@@ -158,7 +201,7 @@ The single-`bash` function-calling thesis tested live against
 `@cf/ibm-granite/granite-4.0-h-micro` (3.4B params, on Cloudflare's free
 inference tier).
 
-Driver: `client/agent-granite.mjs` (full agent loop) and `client/exec-bash.mjs`
+Driver: `client/agent-granite.ts` (full agent loop) and `client/exec-bash.ts`
 (local tool executor used by external loops).
 
 ### Results
@@ -176,7 +219,7 @@ Driver: `client/agent-granite.mjs` (full agent loop) and `client/exec-bash.mjs`
   models, not just frontier ones.
 - The agent loop (tool_call → local exec → observation → next turn) round-trips
   correctly. Workers AI `arguments` come back occasionally double-encoded;
-  `agent-granite.mjs` handles both shapes.
+  `agent-granite.ts` handles both shapes.
 - Self-correction works once when the model sees an explicit error, but a 3B
   model can't always validate the *content* of tool output (it accepted a
   malformed `"2001` as a country code). Larger models would.
@@ -187,7 +230,7 @@ Hypothesis: a small model (Granite 4.0 H Micro at ~$0/free tier) doing 3
 rounds with a richer tool-result contract is cheaper than calling a frontier
 model once. Validated.
 
-`client/smart-bash.mjs` wraps `bash.exec` and returns enriched observations
+`client/smart-bash.ts` wraps `bash.exec` and returns enriched observations
 instead of raw `{stdout, stderr, exitCode}`:
 
 - `tools_referenced[]` — which registry tools appear in the pipeline, each
@@ -226,39 +269,39 @@ instead of raw `{stdout, stderr, exitCode}`:
 
 ```bash
 # enriched observations (default)
-node client/exec-bash.mjs "ip-info | jq -r '.country'"
+node client/exec-bash.ts "ip-info | jq -r '.country'"
 
 # raw observations (baseline for A/B)
-RAW=1 node client/exec-bash.mjs "ip-info | jq -r '.country'"
+RAW=1 node client/exec-bash.ts "ip-info | jq -r '.country'"
 
 # agent loop with toggle
-SMART=0 CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/agent-granite.mjs "your query"
+SMART=0 CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/agent-granite.ts "your query"
 ```
 
 ### Run it
 
 ```bash
 CF_ACCOUNT_ID=<your-account-id> CF_API_TOKEN=<token-with-Workers-AI-scope> \
-  node client/agent-granite.mjs "convert 'agentic tools poc' to uppercase"
+  node client/agent-granite.ts "convert 'agentic tools poc' to uppercase"
 ```
 
 ## Cross-model A/B benchmark
 
 Two MCP servers ship in this repo so you can compare them on the same model:
 
-- `client/mcp-server.mjs` — **composable**: one `bash` tool, registry skills
+- `client/mcp-server.ts` — **composable**: one `bash` tool, registry skills
   available as commands inside it. Compose via unix pipes.
-- `client/mcp-server-classic.mjs` — **classic**: each registry skill exposed
+- `client/mcp-server-classic.ts` — **classic**: each registry skill exposed
   as its own MCP function with its own JSONSchema (traditional
   function-calling shape).
 
-The same harness (`client/compare.mjs`) drives both modes against any
+The same harness (`client/compare.ts`) drives both modes against any
 Workers AI model via the `MODEL` env var. We benchmarked two free-tier
 models on the same 3-query suite:
 
 ```bash
-MODEL=@cf/ibm-granite/granite-4.0-h-micro CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
-MODEL=@hf/nousresearch/hermes-2-pro-mistral-7b CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.mjs
+MODEL=@cf/ibm-granite/granite-4.0-h-micro CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.ts
+MODEL=@hf/nousresearch/hermes-2-pro-mistral-7b CF_ACCOUNT_ID=… CF_API_TOKEN=… node client/compare.ts
 ```
 
 ### Results — IBM Granite 4.0 H Micro (3.4B)
@@ -295,7 +338,7 @@ before each tool call, which inflates token costs.
 Caveats: token counts are **char-based estimates** (`~chars/4`) because
 Hermes returns `usage` all zeros in beta. Response shape also differs from
 Granite (`result.response` + top-level `result.tool_calls[]` with parsed
-arguments) — the new `client/model-adapter.mjs` normalizes both.
+arguments) — the new `client/model-adapter.ts` normalizes both.
 
 | Query | Mode | Rounds | Tokens (est) | Correct |
 |---|---|---:|---:|:---:|
@@ -360,7 +403,7 @@ model_overrides:
       properties: {}    # remove the param entirely for Hermes
 ```
 
-The loader (`client/skill-tuning.mjs`) applies the matching block based on a
+The loader (`client/skill-tuning.ts`) applies the matching block based on a
 case-insensitive substring match against the model name. `MODEL=@hf/.../hermes-2-pro`
 gets the `hermes` block; everyone else gets the default.
 
@@ -387,7 +430,7 @@ have done. This is the empirical validation of [PHILOSOPHY.md](./PHILOSOPHY.md):
 
 For composable mode, the equivalent tuning lives in the system prompt: include
 concrete examples like `ip-info | jq -r '.country'` so Hermes picks the right
-jq path instead of guessing. `client/compare.mjs` and `client/agent-granite.mjs`
+jq path instead of guessing. `client/compare.ts` and `client/agent-granite.ts`
 both can carry per-model prompt fragments — same idea, different surface.
 
 ### Recommendation matrix (updated)
@@ -429,7 +472,7 @@ JSONSchema function-calling acts as a safety net for small models against
 the syntactic cliffs of bash.
 
 The repo lets you flip with zero code changes: just point your MCP host
-at `mcp-server.mjs` (composable) or `mcp-server-classic.mjs` (classic),
+at `mcp-server.ts` (composable) or `mcp-server-classic.ts` (classic),
 or both side-by-side under different names.
 
 ## Compatibility with proposed `llms.txt ## Skills` extension
@@ -445,7 +488,7 @@ This repo includes the **first independent consumer** of that proposed
 format. Use it against any site that publishes a `## Skills` section:
 
 ```bash
-$ node client/load-domain.mjs https://img.automators.work
+$ node client/load-domain.ts https://img.automators.work
 
 ══ https://img.automators.work ═════════════════════════════════
 llms.txt:  https://img.automators.work/llms.txt
@@ -458,7 +501,7 @@ license:     MIT
 homepage:    https://img.automators.work
 body:        2872 chars
 
-$ node client/load-domain.mjs https://docs.anthropic.com
+$ node client/load-domain.ts https://docs.anthropic.com
 
 ══ https://docs.anthropic.com ══════════════════════════════════
 llms.txt:  https://docs.anthropic.com/llms.txt
@@ -468,7 +511,7 @@ No `## Skills` section found in llms.txt at https://docs.anthropic.com/llms.txt.
 See https://github.com/AnswerDotAI/llms-txt/issues/116 for the proposed format.
 ```
 
-The loader (`client/llms-txt-loader.mjs`) implements RFC §2.1 (parsing) and
+The loader (`client/llms-txt-loader.ts`) implements RFC §2.1 (parsing) and
 §2.3 steps 1-4 (discovery + surfacing). Steps 5-7 (user opt-in, load,
 cache) belong to the agent host that consumes the loader's output.
 
@@ -580,21 +623,54 @@ finding remains (`echo-pretty` has 3 optional fields and no
 
 ## Status
 
-- ✅ Phase 1: trusted in-process execution via dynamic `import()`.
-- ✅ MCP server (composable) with `bash` + `tool_schema`.
-- ✅ MCP server (classic) with one tool per registry entry.
-- ✅ Smart-bash observation contract (schema + diagnostics + jq_paths).
-- ✅ Skill linter (8 semantic rules, 27 unit tests).
-- ✅ End-to-end validated with Workers AI Granite 4.0 H Micro,
-  Hermes 2 Pro Mistral 7B, and Gemma 4 26B-a4b-it.
-- ✅ Composable vs classic A/B benchmark across all three models.
-- ✅ Per-model skill tuning rescues weak models (Hermes 1-3/6 → 5+/6).
-- ✅ `model-adapter.mjs` normalizes Workers AI per-model response shapes.
-- ✅ `client/llms-txt-loader.mjs` — first independent consumer of the
-  proposed `llms.txt ## Skills` extension
-  ([Issue #116](https://github.com/AnswerDotAI/llms-txt/issues/116)).
-- ⏭ Phase 2: sandboxed execution via just-bash's `js-exec` (QuickJS) for
-  community-contributed tools.
-- ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs.
+Source-of-truth + execution
+- ✅ Phase 1 trusted execution via dynamic `import()` of bundle code
+- ✅ TypeScript end-to-end (handlers, scripts, tests; strict mode)
+- ✅ Codegen: `tool.yaml` → `src/types.gen.ts` (handlers import generated types)
+- ✅ Drift detection: `npm run codegen:check` gates CI
+
+Runtime
+- ✅ Composable MCP server (one `bash` tool + `tool_schema` introspection)
+- ✅ Classic MCP server (one MCP tool per registry skill)
+- ✅ smart-bash observation contract (schema, jq_paths, pattern-matched
+   diagnostics, required-field validation)
+- ✅ Per-model overrides (`model_overrides.<model>` rescues small models;
+   `system_prompt_fragments` aggregates across skills)
+- ✅ `model-adapter.ts` normalizes Workers AI per-model response shapes
+   (Granite OpenAI-style, Hermes legacy, Gemma reasoning)
+- ✅ Loader supports `https://`, `file://`, and bare paths
+
+Quality
+- ✅ 160 tests (`node:test`, zero extra deps)
+   — unit tests for every parser/converter/rule
+   — 17 MCP wire-format integration tests (spawn server subprocess)
+   — codegen drift integration test
+- ✅ Skill linter with 8 semantic rules derived from the empirical 3-model A/B
+   (Granite, Hermes, Gemma), 27 unit tests
+- ✅ smoke-test-skills.ts hits live upstream APIs (5/5 passing today)
+
+Distribution
+- ✅ `dist/` published to a dedicated `dist` branch by CI; jsDelivr serves
+   it directly. `main` stays free of generated artefacts.
+- ✅ `.gitattributes` normalizes line endings (LF) so Windows contributors
+   stop producing CRLF/LF churn
+
+Validated
+- ✅ End-to-end against Workers AI Granite 4.0 H Micro, Hermes 2 Pro
+   Mistral 7B, and Gemma 4 26B-a4b-it
+- ✅ Composable vs classic A/B benchmark across all three models
+- ✅ Per-model skill tuning rescues weak models (Hermes 1-3/6 → 5+/6)
+- ✅ `client/llms-txt-loader.ts` — first independent consumer of the
+   proposed `llms.txt ## Skills` extension
+   ([Issue #116](https://github.com/AnswerDotAI/llms-txt/issues/116))
+
+Not yet
+- ⏭ Phase 2 sandboxed execution via just-bash's `js-exec` (QuickJS) for
+   community-contributed skills
+- ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs
 - ⏭ Re-run benchmark on Llama 3.1 8B / Qwen 2.5 Coder 32B for the
-  middle-tier crossover point.
+   middle-tier crossover point
+- ⏭ Decide whether `outputSchema.required` should be enforced as part of
+   the skill contract (today optional → handler outputs are technically
+   "any field may be missing"; tightening would catch more handler bugs
+   at the cost of stricter skill authoring)

@@ -1,7 +1,7 @@
 /**
- * llms-txt-loader.test.mjs — unit tests for the spec parsers.
+ * llms-txt-loader.test.ts — unit tests for the spec parsers.
  *
- * Exercises the parsing functions of llms-txt-loader.mjs without making
+ * Exercises the parsing functions of llms-txt-loader.ts without making
  * any network calls. Covers the cases listed in RFC §2.1 plus the edge
  * cases discovered while reviewing the code.
  */

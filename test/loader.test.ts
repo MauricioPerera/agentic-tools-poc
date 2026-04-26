@@ -1,5 +1,5 @@
 /**
- * loader.test.mjs — unit tests for parseArgs + coerce.
+ * loader.test.ts — unit tests for parseArgs + coerce.
  *
  * Run with: npm test
  *

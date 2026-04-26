@@ -258,22 +258,33 @@ This repo is the **agent-side counterpart** of those two:
 | Provider | "How do I declare what an agent can do with my site?" | RFC + Issue #116 |
 | Consumer (us) | "How do I build an agent that owns its skill catalog and uses skills published this way?" | This repo |
 
-`client/llms-txt-loader.mjs` is the first independent consumer of the
-proposed `## Skills` extension. Run `node client/load-domain.mjs <domain>`
-against any compliant site to see discovery flow §2.3 in action.
+`client/llms-txt-loader.ts` is the first independent consumer of the
+proposed `## Skills` extension. Run `npm run discover <domain>` against
+any compliant site to see discovery flow §2.3 in action.
 
 ## Further reading
 
 - [README](./README.md) — usage, A/B benchmark numbers, MCP host
-  configuration.
-- [registry/skills/](./registry/skills/) — example skills (`echo-pretty`,
-  `ip-info`, `url2md`) demonstrating the five layers.
-- [client/smart-bash.mjs](./client/smart-bash.mjs) — the recovery layer
-  in code: enriched observations that teach a small model how to
-  self-correct.
-- [client/skill-tuning.mjs](./client/skill-tuning.mjs) — per-model overrides
-  that rescue weak models without touching the underlying behaviour.
-- [client/llms-txt-loader.mjs](./client/llms-txt-loader.mjs) — discovery of
+  configuration, full repo layout.
+- [registry/skills/](./registry/skills/) — six skills demonstrating the
+  five layers across diverse upstream APIs (echo-pretty, ip-info, url2md,
+  github-repo-info, weather, dictionary).
+- [client/smart-bash.ts](./client/smart-bash.ts) — the recovery layer
+  in code: enriched observations (schema, jq_paths, diagnostics, required
+  validation) that teach a small model how to self-correct.
+- [client/skill-tuning.ts](./client/skill-tuning.ts) — per-model overrides
+  + `system_prompt_fragments` aggregation that rescue weak models
+  without touching the underlying behaviour.
+- [client/skill-linter.ts](./client/skill-linter.ts) — eight semantic
+  rules derived from the empirical 3-model A/B; `npm run lint` runs
+  them in CI.
+- [scripts/codegen-types.ts](./scripts/codegen-types.ts) +
+  [client/jsonschema-to-ts.ts](./client/jsonschema-to-ts.ts) — closes
+  the contract loop: `tool.yaml` is the single source of truth and
+  `Input` / `Output` types are generated from it.
+- [client/llms-txt-loader.ts](./client/llms-txt-loader.ts) — discovery of
   skills published via the proposed `## Skills` extension.
-- [client/compare.mjs](./client/compare.mjs) — the measurement loop that
+- [client/compare.ts](./client/compare.ts) — the measurement loop that
   ownership of the skill catalog enables.
+- [test/](./test/) — 160 tests including MCP wire-format integration
+  suites that spawn the actual server subprocesses.

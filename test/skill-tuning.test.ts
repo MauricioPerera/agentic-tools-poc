@@ -1,5 +1,5 @@
 /**
- * skill-tuning.test.mjs — covers the per-model override layer:
+ * skill-tuning.test.ts — covers the per-model override layer:
  *   - applyModelOverrides (single tool)
  *   - applyOverridesToManifest (whole manifest)
  *   - getSystemPromptFragments (Phase C — aggregation across skills)
