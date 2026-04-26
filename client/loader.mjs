@@ -77,8 +77,10 @@ function filterEnv(env, allowed) {
  * Parses argv + stdin into an `input` object that conforms to the JSONSchema.
  * Tiny but functional: --flag, --key=val, --key val, boolean coercion from
  * defaults, and stdin read into the first string field if no positional given.
+ *
+ * Exported for unit testing.
  */
-function parseArgs(args, stdin, schema) {
+export function parseArgs(args, stdin, schema) {
   const props = schema?.properties ?? {};
   const required = new Set(schema?.required ?? []);
   const out = {};
@@ -91,16 +93,25 @@ function parseArgs(args, stdin, schema) {
     const a = args[i];
     if (!a.startsWith('--')) continue;
     let key, val;
-    if (a.includes('=')) [key, val] = [a.slice(2, a.indexOf('=')), a.slice(a.indexOf('=') + 1)];
-    else { key = a.slice(2); val = (i + 1 < args.length && !args[i + 1].startsWith('--')) ? args[++i] : true; }
-    out[key] = coerce(val, props[key]?.type);
+    if (a.includes('=')) {
+      [key, val] = [a.slice(2, a.indexOf('=')), a.slice(a.indexOf('=') + 1)];
+    } else {
+      key = a.slice(2);
+      val = (i + 1 < args.length && !args[i + 1].startsWith('--')) ? args[++i] : true;
+    }
+    const coerced = coerce(val, props[key]?.type);
+    if (coerced !== undefined) out[key] = coerced;
   }
 
+  // Stdin → first string field that hasn't been set yet. Skips over any
+  // already-assigned fields rather than only checking the first one (the old
+  // version had `!out[Object.keys(props)[0]]`, which always inspected the
+  // first property regardless of the field being iterated).
   if (stdin && stdin.length > 0) {
-    const firstStringField = Object.entries(props).find(([, d]) => d.type === 'string' && !(out[Object.keys(props)[0]]));
-    if (firstStringField && out[firstStringField[0]] === undefined) {
-      out[firstStringField[0]] = stdin.replace(/\n$/, '');
-    }
+    const stdinTarget = Object.keys(props).find((k) =>
+      props[k].type === 'string' && out[k] === undefined
+    );
+    if (stdinTarget) out[stdinTarget] = stdin.replace(/\n+$/, '');
   }
 
   for (const k of required) {
@@ -109,9 +120,22 @@ function parseArgs(args, stdin, schema) {
   return out;
 }
 
-function coerce(val, type) {
-  if (val === true || val === false) return val;
-  if (type === 'boolean') return val === 'true' || val === true;
-  if (type === 'integer' || type === 'number') return Number(val);
+/**
+ * Coerce a parsed argv value into the type declared by the schema.
+ *
+ * `val === true` happens for bare flags like `--upper`. For a boolean field
+ * that's correct. For a string/number field it means "the user typed the
+ * flag with no value" — we return undefined so the missing-required check
+ * upstream can surface a clear error, instead of silently sending the
+ * literal string "true" to the handler (which previously caused
+ * `ip-info --ip` to fetch `https://api.country.is/true` and 404).
+ */
+export function coerce(val, type) {
+  if (type === 'boolean')              return val === 'true' || val === true;
+  if (val === true || val === false)   return undefined;     // bare flag on non-boolean field
+  if (type === 'integer' || type === 'number') {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : undefined;
+  }
   return String(val);
 }
