@@ -123,6 +123,38 @@ conditions or after a delay. A reviewer skims the diff and merges.
   reverts to the Phase 1 in-process `import()`. This is documented as
   development-only and never used by the MCP servers in default mode.
 
+#### Bridge invariant: no streaming responses across the VM boundary
+
+The fetch bridge in `client/sandbox.ts` reads the response body
+**eagerly on the host side** before crossing into the VM. The shape
+the handler sees is:
+
+```ts
+// inside sandbox: shimmed Response object
+{ ok, status, headers: { get(k) }, text: async () => body, json: async () => JSON.parse(body) }
+```
+
+This is a deliberate invariant, not a perf shortcut:
+
+1. **One async crossing per fetch.** Lazy `.text()` / `.json()` would
+   require asyncifying every method call across the VM/host boundary
+   — slower, more code, and a much larger surface to get wrong.
+2. **No partial-read leak channel.** A streaming response would let an
+   adversarial upstream encode timing-side-channel data into chunk
+   boundaries. Eager read collapses the response into a single string
+   the host has fully observed before the handler sees a byte.
+3. **Cap enforcement is straightforward.** Per-skill `outputCap` (V5)
+   is a simple `string.slice(0, n)` after the fetch returns. With
+   streaming we'd need a cap at the chunk reader level, with the same
+   adversarial chunking concerns.
+
+**Consequence for skill authors**: a handler cannot stream-process a
+multi-megabyte response. If a future skill needs that, it must declare
+the use case and the bridge gets a separate streaming surface that
+applies its own host-side cap. Today no skill needs streaming, and
+the largest legitimate response (url2md markdown) is well under
+the V5 default cap.
+
 **Phase 3 plan**:
 - Per-skill capability flags in `tool.yaml`:
   `capabilities: [network, env]` — the loader exposes only what's

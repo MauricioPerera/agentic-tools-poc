@@ -203,6 +203,105 @@ this comparison, applied the `smart-bash` enrichment that made Granite
 self-correct, or chosen between modes per task. The ownership unlocks
 the optimization loop.
 
+## Methodology — how the catalog hardens over time
+
+This repo evolves through a single recurring loop:
+
+> **Empirical observation → codified test → strongest available enforcement layer.**
+
+Every concrete improvement in the registry, the smart-bash contract, the
+linter, or the sandbox traces back to that loop. It is the spine of how
+the project gets better, not a slogan — each step is a real artefact
+that lives in the codebase. Two properties make it work:
+
+1. **Discovery is empirical, not theoretical.** We don't add a rule
+   because it sounds reasonable; we add it because a real model on real
+   queries did the wrong thing in a way we can reproduce. Hermes 7B
+   filled `ip` with `"192.168.1.1"` when the field was optional and
+   undescribed → that's the evidence behind R1
+   `optional-string-no-description`. Granite kept calling
+   `.ip.country` on a flat object → that's the evidence behind the
+   `jq could not traverse the path` diagnostic in `smart-bash`.
+
+2. **Enforcement ratchets up; it never loosens.** Each iteration moves
+   the check to the strongest layer it can credibly live at. PR-time
+   linting catches the careless case; runtime sandboxing catches the
+   motivated one. Once a finding is enforced at a stronger layer, the
+   weaker check stays as belt-and-suspenders rather than getting
+   removed — defence-in-depth has no cost when the rules are static
+   text.
+
+### The enforcement ladder, weakest to strongest
+
+| Layer | Catches | Example |
+|---|---|---|
+| Documentation / README | Honest readers | "Don't import `node:fs` from a handler" |
+| Code review | Attentive reviewers | Manual PR check for the same |
+| Linter (PR-time) | Accidents + lazy attacker | R9 `forbidden-imports` regex-blocks `import 'node:fs'` |
+| Test (regression) | Future drift | `loader-integrity.test.ts` proves sha256 mismatch refuses to load |
+| Build-time gate | Tampered artefacts | sha256 in `manifest.json`, verified before sandbox |
+| Runtime sandbox | Motivated attacker | QuickJS — `node:fs` is `undefined` inside the VM |
+
+Every cell that exists today started one or more cells to its left.
+A finding doesn't have to climb the whole ladder in one commit; it
+climbs one rung at a time, and earlier rungs are kept.
+
+### Worked iterations
+
+Each of these is a real commit history in the repo, not a hypothetical:
+
+- **Antipattern → linter rule.** A/B benchmark across Hermes/Granite/
+  Gemma found 8 distinct shape problems in skill definitions that
+  small models choked on. Each became a rule in `client/skill-linter.ts`
+  and runs in CI on every PR. (See `## Skill linter` in the README.)
+
+- **Recovery pattern → smart-bash diagnostic.** Granite's failed jq
+  invocations and command-not-found errors were collected, abstracted,
+  and turned into the seven pattern-matched `diagnostics` strings
+  emitted by `client/smart-bash.ts` plus the fallback for unmatched
+  stderr. The model now self-corrects in the next round instead of
+  looping.
+
+- **Static-check bypass → runtime sandbox.** Code review pointed out
+  that R9 `forbidden-imports` is regex-based and a motivated attacker
+  could write `import(\`no\${'de'}:fs\`)` to evade it. Response: move
+  execution into a QuickJS VM where `node:fs` returns `undefined` no
+  matter how it's spelled. R9 stays — it catches accidents at PR time
+  before they ever reach CI; the sandbox catches the rest at runtime.
+
+- **Untrusted output → delimiter wrap + per-skill cap.** url2md
+  returns whatever markdown the upstream page contains — a natural
+  prompt-injection vector. Response: wrap skill output in
+  `<skill-output skill="X" trust="untrusted">…</skill-output>`,
+  declare `outputCap: 4096` on url2md specifically, sanitise ANSI/
+  control chars before wrapping, and inject a system-prompt fragment
+  teaching the model the contract. Not full prompt-injection defence
+  (open research problem) — but it raises the cost of casual injection
+  and bounds blast radius. (See THREAT-MODEL.md V5.)
+
+- **Disciplined-tool-use ambiguity → outcome bucketing.** The
+  cross-model A/B was hiding the difference between "the model called
+  the right tool and parsed the result" and "the model bypassed the
+  tool entirely and answered from training knowledge". Both passed the
+  expectation regex; both showed as ✓. Response: `compare.ts` now
+  emits four outcome buckets (`via_tool`, `without_tool`,
+  `wrong_with_tool`, `wrong_no_tool`), so the discipline gap surfaces
+  in the data instead of getting averaged away.
+
+### Why this matters
+
+The methodology compounds. Every new model class added to the A/B
+generates new findings; every finding climbs the ladder; the registry
+gets harder to misuse and easier to extend. The work-stream isn't
+"figure out the right design up front" — it's "expose the system to
+adversarial input, harden the layer that's failing, repeat."
+
+If you fork this repo, the most important thing to copy is not the
+linter rules or the sandbox or the threat model — those are artefacts.
+The thing to copy is the loop: don't add an enforcement layer because
+it would be nice to have; add it because something specific got
+through the previous one.
+
 ## Naming convention used in this repo
 
 - **Skill** — a unit of capability owned by the agent's author. Lives in

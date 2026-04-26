@@ -757,6 +757,15 @@ nested objects, optional vs required, and JSDoc comments from `description`.
 
 ## Skill linter
 
+> **Methodology note**: every rule below started as a real model doing
+> the wrong thing in a reproducible way, then got codified at the
+> strongest enforcement layer it could credibly live at. That loop
+> (empirical observation → codified test → ratcheted enforcement) is
+> the spine of how this repo evolves; see
+> [PHILOSOPHY.md → Methodology](./PHILOSOPHY.md#methodology--how-the-catalog-hardens-over-time)
+> for the full account, including the runtime extension via the QuickJS
+> sandbox.
+
 `npm run lint` runs a semantic linter over every `tool.yaml` (and the
 handler source under `src/`). Eight of the rules encode antipatterns
 observed empirically when running real models against the registry — e.g.
