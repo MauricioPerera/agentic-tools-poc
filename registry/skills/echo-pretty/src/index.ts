@@ -1,20 +1,12 @@
 /**
  * echo-pretty
  * Pure transform tool: no network, no env. Validates the trusted-execution path.
+ *
+ * Input/Output types come from `./types.gen.ts` — auto-generated from
+ * `tool.yaml`. To change the contract, edit the YAML and run `npm run codegen`.
  */
 import type { SkillHandler } from '../../../../types/index.ts';
-
-interface Input {
-  text: string;
-  upper?: boolean;
-  lower?: boolean;
-  prefix?: string;
-}
-
-interface Output {
-  text: string;
-  length: number;
-}
+import type { Input, Output } from './types.gen.ts';
 
 const handler: SkillHandler<Input, Output> = async (input, ctx) => {
   let out = String(input.text ?? '');

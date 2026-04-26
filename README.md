@@ -467,6 +467,55 @@ It also handles:
 - Negative path: domains without `## Skills` get a friendly hint pointing
   to the proposal issue, evangelizing adoption while degrading cleanly
 
+## Type generation from tool.yaml
+
+`npm run codegen` reads each `registry/skills/<slug>/tool.yaml` and emits
+`registry/skills/<slug>/src/types.gen.ts` containing TypeScript `Input` and
+`Output` interfaces derived directly from the JSONSchema. The handler imports
+those types instead of redeclaring them:
+
+```typescript
+// registry/skills/ip-info/src/index.ts
+import type { SkillHandler } from '../../../../types/index.ts';
+import type { Input, Output } from './types.gen.ts';   // ← generated
+
+const handler: SkillHandler<Input, Output> = async (input, ctx) => { … };
+```
+
+The generated file shows JSDoc descriptions inline:
+
+```typescript
+// registry/skills/ip-info/src/types.gen.ts (auto-generated)
+export interface Input {
+  /** IP to look up. Empty string (default) → caller's public IP. */
+  ip?: string;
+}
+
+export interface Output {
+  ip?: string;
+  /** ISO 3166-1 alpha-2 country code */
+  country?: string;
+}
+```
+
+`tool.yaml` is now the **single source of truth** for the contract.
+Modifying the schema regenerates the types; if a handler stops matching,
+the TS compiler fails. The previous risk — "I changed `inputSchema` but
+forgot to update the handler's `interface Input`" — is impossible.
+
+CI runs `npm run codegen:check`, which regenerates and diffs against the
+committed files. A stale generated file (someone changed the YAML but
+forgot to run codegen) fails the build:
+
+```
+✗ ip-info: types.gen.ts is out of date with tool.yaml
+1 skill(s) have stale generated types. Run `npm run codegen`.
+```
+
+The converter (`client/jsonschema-to-ts.ts`, ~50 lines, zero deps) handles
+the JSONSchema subset we use: primitives, enums (as union literals), arrays,
+nested objects, optional vs required, and JSDoc comments from `description`.
+
 ## Skill linter
 
 `npm run lint` runs a semantic linter over every `tool.yaml`. It encodes

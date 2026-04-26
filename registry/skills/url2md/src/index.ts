@@ -11,20 +11,12 @@
  *               so the model doesn't have to learn that pattern itself
  * 5. Meta:      composes naturally with `jq -r .markdown`, `wc`, `head`,
  *               or downstream LLM calls in pipelines
+ *
+ * Input/Output types come from `./types.gen.ts` — auto-generated from
+ * `tool.yaml`. To change the contract, edit the YAML and run `npm run codegen`.
  */
 import type { SkillHandler, ToolContext } from '../../../../types/index.ts';
-
-interface Input {
-  url: string;
-  raw?: boolean;
-}
-
-interface Output {
-  title: string | null;
-  source: string;
-  markdown: string;
-  length: number;
-}
+import type { Input, Output } from './types.gen.ts';
 
 const BASE = 'https://url2md.automators.work/md';
 
@@ -89,12 +81,15 @@ const handler: SkillHandler<Input, Output> = async (input, ctx) => {
   const titleMatch = md.match(/^# (.+?)$/m);
   const sourceMatch = md.match(/^> Source: (.+?)$/m);
 
-  return {
-    title: titleMatch?.[1]?.trim() ?? null,
+  // outputSchema declares fields as optional but we always populate them
+  // — `satisfies Output` enforces shape conformance at the boundary.
+  const out: Output = {
+    title: titleMatch?.[1]?.trim() ?? undefined,
     source: sourceMatch?.[1]?.trim() ?? input.url,
     markdown: md,
     length: md.length,
   };
+  return out;
 };
 
 export default handler;

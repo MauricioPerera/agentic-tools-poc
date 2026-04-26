@@ -2,17 +2,12 @@
  * ip-info
  * Validates the network-capable path: tool uses ctx.fetch which the loader
  * gates against the networkPolicy declared in tool.yaml.
+ *
+ * Input/Output types come from `./types.gen.ts` — auto-generated from
+ * `tool.yaml`. To change the contract, edit the YAML and run `npm run codegen`.
  */
 import type { SkillHandler } from '../../../../types/index.ts';
-
-interface Input {
-  ip?: string;
-}
-
-interface Output {
-  ip: string;
-  country: string;
-}
+import type { Input, Output } from './types.gen.ts';
 
 // Recovery layer for the skill itself: small models love to invent values for
 // optional args (Hermes 2 Pro filled this with "192.168.1.1", "not_specified",
@@ -39,7 +34,9 @@ const handler: SkillHandler<Input, Output> = async (input, ctx) => {
   const res = await ctx.fetch(url);
   if (!res.ok) throw new Error(`country.is returned ${res.status}`);
   const data = (await res.json()) as { ip: string; country: string };
-  return { ip: data.ip, country: data.country };
+  // outputSchema declares both fields as optional, but the upstream API always
+  // returns them populated — narrow back to non-optional for downstream callers.
+  return { ip: data.ip, country: data.country } satisfies Output;
 };
 
 export default handler;
