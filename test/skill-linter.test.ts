@@ -344,6 +344,28 @@ test('R9: silent when string "node:fs" appears inside a comment but not imported
   assert.deepEqual(r, []);
 });
 
+test('R9: KNOWN false-positive: comment that quotes "import \'node:fs\'" trips the rule', () => {
+  // The regex is text-based, not AST-based, so a comment that LITERALLY
+  // contains the import syntax matches as if it were code. Documenting the
+  // false-positive explicitly so a future contributor knows it's known and
+  // understands the trade-off (regex catches more real bypass attempts;
+  // AST would be precise but adds a parser dependency).
+  //
+  // Mitigation today: a reviewer who sees R9 fire on a comment-only line
+  // can confirm and waive. The runtime sandbox (V2) is the actual
+  // guarantee — R9 is PR-time defence-in-depth, so a false-positive is
+  // higher-friction-but-safer than a false-negative.
+  const src = `
+    // Bad example to avoid: import 'node:fs' would bypass the sandbox
+    export default async () => { return { ok: true }; };
+  `;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.equal(r.length, 1, 'documents the known false-positive on import-syntax in comments');
+  assert.match(r[0]!.message, /node:fs/);
+  // If a future change moves to AST-based scanning and this test breaks,
+  // delete it (the precision is a strict improvement).
+});
+
 // ---------------------------------------------------------------------------
 // Aggregator
 

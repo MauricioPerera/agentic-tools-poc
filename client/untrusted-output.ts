@@ -67,21 +67,29 @@ export function sanitizeSkillOutput(raw: string): string {
 }
 
 export interface CapResult {
+  /** The capped text, possibly with a truncation marker appended. */
   text: string;
   truncated: boolean;
+  /** Length of the original input before any capping. */
   originalLength: number;
+  /** Number of characters from the original that survived (i.e. `cap`).
+   *  Stored explicitly so the wrapper doesn't have to compute it from
+   *  `text.length - TRUNCATION_MARKER.length - 1`, which is brittle to
+   *  any change in the marker shape. */
+  keptLength: number;
 }
 
 /** Apply the per-skill cap (or default) to a string of skill output. */
 export function applyOutputCap(text: string, cap?: number): CapResult {
   const limit = cap ?? DEFAULT_OUTPUT_CAP_CHARS;
   if (text.length <= limit) {
-    return { text, truncated: false, originalLength: text.length };
+    return { text, truncated: false, originalLength: text.length, keptLength: text.length };
   }
   return {
     text: text.slice(0, limit) + '\n' + TRUNCATION_MARKER,
     truncated: true,
     originalLength: text.length,
+    keptLength: limit,
   };
 }
 
@@ -96,6 +104,22 @@ export interface WrapOptions {
 }
 
 /**
+ * Escape a string for safe interpolation into an XML-style attribute value.
+ * Slugs are validated by the schema (`^[a-z0-9][a-z0-9-]*$`) so under normal
+ * flow they have no special chars. Escaping here is defence-in-depth: a
+ * tampered manifest, a future schema relaxation, or a programmatic caller
+ * that bypasses the schema should not be able to inject attributes or close
+ * the wrapper element from inside the slug field.
+ */
+function escapeXmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Wrap a payload (typically the JSON-serialized observation, or the
  * raw stdout) in the untrusted-output delimiter. Caps and sanitizes
  * before wrapping.
@@ -104,11 +128,12 @@ export function wrapUntrustedOutput(payload: string, opts: WrapOptions): string 
   const sanitized = sanitizeSkillOutput(payload);
   const capped = applyOutputCap(sanitized, opts.outputCap);
   const trust = opts.untrusted === false ? 'trusted' : 'untrusted';
+  // Use capped.keptLength directly — no inference from text.length.
   const truncatedAttr = capped.truncated
-    ? ` truncated="${capped.originalLength}->${capped.text.length - TRUNCATION_MARKER.length - 1}"`
+    ? ` truncated="${capped.originalLength}->${capped.keptLength}"`
     : '';
   return (
-    `<skill-output skill="${opts.slug}" trust="${trust}"${truncatedAttr}>\n` +
+    `<skill-output skill="${escapeXmlAttr(opts.slug)}" trust="${trust}"${truncatedAttr}>\n` +
     capped.text +
     `\n</skill-output>`
   );
