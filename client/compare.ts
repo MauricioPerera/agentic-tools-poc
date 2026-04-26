@@ -13,18 +13,15 @@
  */
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.ts';
-import { makeObservation, lastPipelineStage } from './smart-bash.ts';
-import { normalizeReply, tokensUsed, type TokenUsage } from './model-adapter.ts';
+import { normalizeReply } from './model-adapter.ts';
 import { applyOverridesToManifest, getSystemPromptFragments } from './skill-tuning.ts';
-import { parseToolCallArguments, inputToArgv, argvToShellCommand } from './arg-parser.ts';
-import { computeCost, formatCost, getPricing } from './pricing.ts';
+import { formatCost, getPricing } from './pricing.ts';
+import { selectSuite, type Bucket } from './eval-suite.ts';
 import {
-  wrapUntrustedOutput,
-  outputCapForSkill,
-  UNTRUSTED_OUTPUT_FRAGMENT,
-} from './untrusted-output.ts';
-import { selectSuite, type Bucket, type Query } from './eval-suite.ts';
-import type { ChatMessage, Manifest, NormalizedReply, ToolCall } from '../types/index.ts';
+  runComposable, runClassic,
+  type CallModel, type RunResult,
+} from './agent-loop.ts';
+import type { Manifest } from '../types/index.ts';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
@@ -66,31 +63,22 @@ if (MODEL_PRICING) {
 }
 console.log();
 
-interface RunResult {
-  rounds: number;
-  /** Sum of usage.prompt_tokens across every round (or our estimate). */
-  inputTokens: number;
-  /** Sum of usage.completion_tokens across every round (or our estimate). */
-  outputTokens: number;
-  /** USD cost computed from per-model pricing × tokens. null if we don't price the model. */
-  costUSD: number | null;
-  /** True when usage.estimated was true on any round (Hermes beta). */
-  anyEstimated: boolean;
-  finalAnswer: string;
-  /** Did the regex match? Says nothing about how the answer was produced. */
-  correct: boolean;
-  /** Number of tool_calls the model emitted across all rounds. 0 means the
-   *  model answered without ever invoking a tool — disciplinarily distinct
-   *  from "called the right tool and parsed the result", even if both pass
-   *  the same expectation regex (e.g. Gemma Q1 used training knowledge). */
-  toolCalls: number;
-  /** Bucketed outcome: combines correctness with tool-use discipline.
-   *   - 'via_tool'        — correct AND used at least one tool
-   *   - 'without_tool'    — correct AND used zero tools (training-knowledge bypass)
-   *   - 'wrong_with_tool' — wrong AND used at least one tool
-   *   - 'wrong_no_tool'   — wrong AND used zero tools */
-  outcome: 'via_tool' | 'without_tool' | 'wrong_with_tool' | 'wrong_no_tool';
-}
+// Workers-AI fetch-based callModel adapter. Wraps the agent-loop's
+// provider-agnostic CallModel interface around the Cloudflare REST API.
+const callModel: CallModel = async (messages, tools) => {
+  const r = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run/${MODEL}`,
+    {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, tools, max_tokens: 256, temperature: 0.1 }),
+    },
+  );
+  if (!r.ok) throw new Error(`CF API ${r.status}: ${await r.text()}`);
+  const env = (await r.json()) as { success: boolean; result: Parameters<typeof normalizeReply>[0]; errors: unknown };
+  if (!env.success) throw new Error(JSON.stringify(env.errors));
+  return env.result;
+};
 
 interface RowResult {
   query: string;
@@ -105,12 +93,20 @@ console.log(`Suite: ${SUITE} (${QUERIES.length} quer${QUERIES.length === 1 ? 'y'
 
 for (const q of QUERIES) {
   console.log(`\n${'='.repeat(70)}\n${q.id} [${q.bucket}]: ${q.text}\n${'='.repeat(70)}`);
+  const agentOpts = {
+    callModel,
+    model: MODEL,
+    modelPricing: MODEL_PRICING,
+    maxRounds: MAX_ROUNDS,
+    promptFragments,
+    trace: (msg: string) => console.log(`  ${msg}`),
+  };
   results.push({
     query: q.id,
     bucket: q.bucket,
     expectNoTool: q.expectNoTool ?? false,
-    composable: await runComposable(q),
-    classic:    await runClassic(q),
+    composable: await runComposable(q, manifest, bash, agentOpts),
+    classic:    await runClassic(q, manifest, bash, agentOpts),
   });
 }
 
@@ -263,189 +259,11 @@ if (!MODEL_PRICING) {
   console.log(`\n  Note: pricing for "${MODEL}" not in client/pricing.ts table — cost columns omitted.`);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-
-type ToolDef = { type: 'function'; function: { name: string; description: string; parameters: unknown } };
-type ExecFn = (tc: ToolCall) => Promise<unknown>;
-
-async function runComposable(q: Query): Promise<RunResult> {
-  const toolList = manifest.tools
-    .map((t) => `- ${t.slug}: ${t.summary}. Output schema: ${JSON.stringify(t.outputSchema ?? {})}`)
-    .join('\n');
-
-  const baseSystem =
-    `You have a single tool: \`bash\`. Compose registry commands with unix pipes.\n\n` +
-    `Available registry commands inside bash:\n${toolList}\n\n` +
-    `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
-    `Always use bash to act; never answer from training knowledge for live data. Be terse.\n` +
-    `Tool observations include tools_referenced (output_schema, example, jq_paths) ` +
-    `and diagnostics. Read them to fix mistakes.\n` +
-    UNTRUSTED_OUTPUT_FRAGMENT;
-
-  const messages: ChatMessage[] = [
-    { role: 'system', content: appendFragments(baseSystem, promptFragments) },
-    { role: 'user', content: q.text },
-  ];
-  const tools: ToolDef[] = [
-    {
-      type: 'function',
-      function: {
-        name: 'bash',
-        description: 'Execute a bash command and return its output.',
-        parameters: { type: 'object', required: ['command'], properties: { command: { type: 'string', description: 'The bash command line.' } } },
-      },
-    },
-  ];
-
-  return runLoop(messages, tools, q, async (tc) => {
-    const args = parseToolCallArguments(tc.function.arguments);
-    const cmd = String(args['command'] ?? '');
-    console.log(`  [composable] bash → ${cmd}`);
-    const result = await bash.exec(cmd);
-    const obs = makeObservation(cmd, result as { stdout: string; stderr: string; exitCode: number }, manifest);
-
-    // V5 strawman: if the pipeline ends in a registry tool, the stdout
-    // is untrusted skill output. Wrap it before it lands in the LLM
-    // context. Non-registry pipelines (pure jq/grep) skip wrapping —
-    // those produce data shaped by the agent itself.
-    const lastStage = lastPipelineStage(cmd);
-    const lastSlug = manifest.tools.find(
-      (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
-    )?.slug ?? null;
-    if (lastSlug && obs.stdout) {
-      const cap = outputCapForSkill(lastSlug, manifest.tools);
-      obs.stdout = wrapUntrustedOutput(obs.stdout, { slug: lastSlug, outputCap: cap });
-    }
-    return obs;
-  });
-}
-
-async function runClassic(q: Query): Promise<RunResult> {
-  const toolDefs: ToolDef[] = manifest.tools.map((t) => ({
-    type: 'function',
-    function: { name: t.slug, description: t.summary, parameters: t.inputSchema },
-  }));
-
-  const baseSystem =
-    `You have ${manifest.tools.length} tool(s). Call them as needed.\n` +
-    `Always use the tools to act; never answer from training knowledge for live data. Be terse.\n` +
-    UNTRUSTED_OUTPUT_FRAGMENT;
-
-  const messages: ChatMessage[] = [
-    { role: 'system', content: appendFragments(baseSystem, promptFragments) },
-    { role: 'user', content: q.text },
-  ];
-
-  return runLoop(messages, toolDefs, q, async (tc) => {
-    const tool = manifest.tools.find((t) => t.slug === tc.function.name);
-    if (!tool) return { error: `unknown tool: ${tc.function.name}` };
-    const args = parseToolCallArguments(tc.function.arguments);
-    const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
-    console.log(`  [classic] ${tc.function.name} ${JSON.stringify(args)}`);
-    const result = await bash.exec(cmd);
-    // Classic mode: every call lands directly on a registry skill, so the
-    // stdout is always untrusted output. Apply V5 wrapping unconditionally.
-    let stdout = (result.stdout ?? '').trim();
-    if (stdout) {
-      stdout = wrapUntrustedOutput(stdout, {
-        slug: tool.slug,
-        outputCap: tool.outputCap,
-      });
-    }
-    return {
-      stdout,
-      stderr: (result.stderr ?? '').trim(),
-      exitCode: result.exitCode,
-    };
-  });
-}
-
-function classifyOutcome(correct: boolean, toolCalls: number): RunResult['outcome'] {
-  if (correct && toolCalls > 0) return 'via_tool';
-  if (correct) return 'without_tool';
-  if (toolCalls > 0) return 'wrong_with_tool';
-  return 'wrong_no_tool';
-}
-
-async function runLoop(
-  messages: ChatMessage[],
-  tools: ToolDef[],
-  q: Query,
-  execTool: ExecFn,
-): Promise<RunResult> {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let anyEstimated = false;
-  let toolCalls = 0;
-
-  for (let round = 1; round <= MAX_ROUNDS; round++) {
-    const raw = await callModel(messages, tools);
-    const reply = normalizeReply(raw, MODEL);
-    const usage: TokenUsage = tokensUsed(reply, messages, tools);
-    inputTokens  += usage.input;
-    outputTokens += usage.output;
-    if (usage.estimated) anyEstimated = true;
-
-    messages.push({
-      role: 'assistant',
-      content: reply.content,
-      ...(reply.tool_calls.length ? { tool_calls: reply.tool_calls } : {}),
-    });
-
-    if (reply.tool_calls.length) {
-      toolCalls += reply.tool_calls.length;
-      for (const tc of reply.tool_calls) {
-        const obs = await execTool(tc);
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(obs) });
-      }
-      continue;
-    }
-
-    const finalAnswer = reply.content.trim();
-    const correct = q.expect.test(finalAnswer);
-    return {
-      rounds: round,
-      inputTokens, outputTokens,
-      costUSD: MODEL_PRICING ? computeCost(inputTokens, outputTokens, MODEL_PRICING) : null,
-      anyEstimated,
-      finalAnswer,
-      correct,
-      toolCalls,
-      outcome: classifyOutcome(correct, toolCalls),
-    };
-  }
-  return {
-    rounds: MAX_ROUNDS,
-    inputTokens, outputTokens,
-    costUSD: MODEL_PRICING ? computeCost(inputTokens, outputTokens, MODEL_PRICING) : null,
-    anyEstimated,
-    finalAnswer: '(no convergence)',
-    correct: false,
-    toolCalls,
-    outcome: classifyOutcome(false, toolCalls),
-  };
-}
-
-async function callModel(messages: ChatMessage[], tools: ToolDef[]): Promise<Parameters<typeof normalizeReply>[0]> {
-  const r = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run/${MODEL}`,
-    {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, tools, max_tokens: 256, temperature: 0.1 }),
-    },
-  );
-  if (!r.ok) throw new Error(`CF API ${r.status}: ${await r.text()}`);
-  const env = (await r.json()) as { success: boolean; result: Parameters<typeof normalizeReply>[0]; errors: unknown };
-  if (!env.success) throw new Error(JSON.stringify(env.errors));
-  return env.result;
-}
-
-/** Append per-model prompt fragments to a base system prompt, if any. */
-function appendFragments(base: string, fragments: string[]): string {
-  if (!fragments?.length) return base;
-  return `${base}\n\nMODEL-SPECIFIC INSTRUCTIONS:\n${fragments.map((f) => '- ' + f).join('\n')}`;
-}
+// All the agent-loop logic (runComposable, runClassic, runLoop, classifyOutcome,
+// appendFragments) lives in client/agent-loop.ts so the same loop can be driven
+// by any model provider, not just Workers AI fetch. compare.ts injects the
+// fetch-based callModel above; an alternate runner could inject a different
+// adapter without touching the loop semantics.
 
 // Suppress "Manifest unused" hint when using only types
 void (null as Manifest | null);

@@ -652,20 +652,80 @@ concrete examples like `ip-info | jq -r '.country'` so Hermes picks the right
 jq path instead of guessing. `client/compare.ts` and `client/agent-granite.ts`
 both can carry per-model prompt fragments — same idea, different surface.
 
+### Discipline-bucket measurement (5 queries × 4 models, real data)
+
+Below: actual results from `SUITE=discipline` against 4 of the 5
+benchmark models. Gemma 3 12B-it is excluded because its current
+Workers AI deployment doesn't support `tool_choice: 'auto'` (the vLLM
+server was started without `--enable-auto-tool-choice` /
+`--tool-call-parser` flags) — it's currently unusable as an agent on
+Workers AI regardless of how disciplined it might be.
+
+The 5 queries are all answerable from training knowledge alone
+("capital of Spain", "7 × 8", "language of 'merci'", "past tense of
+'run'", "spell 'mississippi' in uppercase"). The disciplined outcome
+is `without_tool` — a model that calls `dictionary` to spell
+"mississippi" is wrong-shaped even when correct.
+
+| Model | Composable disciplined | Classic disciplined | Pattern |
+|---|:---:|:---:|---|
+| Granite 4.0 H Micro (3.4B) | 1/5 (D2) | 2/5 (D2 + D3) | Reaches for tool but emits empty content when it does (`wrong_with_tool`, not `via_tool`) |
+| Hermes 2 Pro 7B (beta) | 0/5 | 0/5 | Always reaches for tool; never produces a correct answer |
+| Llama 3.1 8B fp8 | 0/5 | 0/5 | Always reaches for tool; never produces a correct answer |
+| Gemma 3 12B-it | n/a | n/a | Workers AI deployment unusable: `tool_choice: 'auto'` rejected |
+| Qwen 2.5 Coder 32B | 2/5 (D2 + D5) | 2/5 (D2 + D5) | Best discipline of the four — answers concretely on math + spelling |
+
+Three findings with real consequences:
+
+1. **None of the 4 testable models are above 40% disciplined.** With
+   tools available in the prompt, every open-weights model in our
+   suite over-reaches — it pattern-matches on "tools present" before
+   it considers "is this a knowledge question". The system-prompt
+   instruction "never answer from training knowledge for live data"
+   is structurally insufficient; models need either (a) explicit
+   per-query gating or (b) a discipline-trained checkpoint.
+
+2. **D2-arithmetic ("7 × 8") is the only universal discipline pass
+   among models that have any.** Granite + Qwen both answer 56
+   directly without invoking a tool. Spelling, capitals, language ID
+   — those all trigger spurious tool calls even though training
+   knowledge is sufficient.
+
+3. **Reaching for a tool on a discipline question often produces
+   empty content** (model emits `tool_calls` but no answer text). The
+   outcome is `wrong_with_tool`, not `via_tool` — undisciplined AND
+   wrong, not just undisciplined. So the cost of over-reach is
+   compounded: you waste tokens on the tool call AND don't get an
+   answer.
+
+This is exactly the failure mode the previous 3-query A/B couldn't
+expose. Adding tools to a small open-weights agent without discipline
+training degrades behaviour on questions it would have answered
+correctly bare — a real architectural finding, not a quirk.
+
+> **Cost note**: this measurement was 4 models × 5 queries × 2 modes =
+> 40 model calls, ~$0.05 total (Granite + Hermes free, Llama ~$0.01,
+> Qwen ~$0.04). The 15 remaining queries × 5 models × 2 modes need
+> tool execution against the live skills, which requires
+> `CF_API_TOKEN` in env to run `client/compare.ts` properly. They are
+> not in this table; the framework has been validated end-to-end via
+> the discipline subset.
+
 ### Recommendation matrix (read with hedges)
 
 > **Sample size caveat**: every cell below is grounded in 3 queries on
-> 1 model. Treat the matrix as **directional hypotheses**, not validated
-> recommendations. A wider suite (more queries, more models, more
-> diversity in skill mix) would either solidify or flip several rows.
+> 1 model (or the 5-query discipline measurement above where
+> applicable). Treat the matrix as **directional hypotheses**, not
+> validated recommendations. A wider suite (more queries, more models,
+> more diversity in skill mix) would either solidify or flip several rows.
 
 | Model class | Empirically tested? | Recommended mode (hypothesis) | Why we think so |
 |---|:---:|---|---|
 | Tool-tuned small (Granite 4.0 H Micro, $0.017/M in) | ✅ 6/6 | **classic primary** | Only model in our suite that converged on every query. JSONSchema acts as safety net. |
 | Older 7B instruct (Hermes 2 Pro) | ✅ 1-3/6 → 5+/6 | classic + per-model `model_overrides` block | Without tuning, invents optional args + gives up. With tuning, recovers. |
-| Mid-size open-weights (Llama 3.1 8B) | ✅ 0-1/6 | not recommended without tuning | Loops on tool output, reaches for unavailable commands. Behaviour same as Hermes pre-tuning; tuning likely required. |
-| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 | classic — watch for tokenization loops | Reasoning capability is a liability here; eats tokens without improving outcomes. |
-| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 | not recommended | Hallucinates `<tools>` markup as text, invents answers without calling tools. |
+| Mid-size open-weights (Llama 3.1 8B) | ✅ 0-1/6 + 0/5 discipline | **not recommended** without tuning | Loops on tool output, reaches for unavailable commands. Discipline measurement: 0% — never resists calling a tool. |
+| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 (legacy) | classic — watch for tokenization loops | Reasoning capability is a liability here; eats tokens without improving outcomes. **Gemma 3 12B-it** (the current Workers AI Gemma) is currently unusable as an agent — deployment lacks `--enable-auto-tool-choice`. |
+| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 + 2/5 discipline | not recommended for general agent use | Hallucinates `<tools>` markup as text on chains, but discipline measurement is the best of the open-weights tested (40% — answers math + spelling without reaching for tool). |
 | Frontier (Claude, GPT-4o, *not tested in this repo*) | ❌ untested | composable (received wisdom) | Reliable bash composition + fewer tokens *should* favour composable, but we have no data here. |
 
 **Cost-aware conclusion**: among the models we benchmarked,
