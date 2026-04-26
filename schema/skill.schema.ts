@@ -30,6 +30,20 @@ export const SKILL_SCHEMA: JSONSchema = {
     },
     // Maximum stdout length forwarded to the LLM (THREAT-MODEL.md V5 cap).
     outputCap: { type: 'integer' },
+    // Versioned archive of past releases (see types/SkillVersionEntry).
+    // Populated by the manifest builder, not declared in tool.yaml.
+    versions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['version', 'source', 'sha256'],
+        properties: {
+          version: { type: 'string', pattern: '^\\d+\\.\\d+\\.\\d+$' },
+          source:  { type: 'string' },
+          sha256:  { type: 'string' },
+        },
+      },
+    },
   },
 };
 

@@ -19,11 +19,13 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgvAgainstSchema, coerceArgvValue } from './arg-parser.ts';
 import { runHandlerSandboxed } from './sandbox.ts';
+import { resolveBest } from './semver-pin.ts';
 import type {
   BashResult,
   Manifest,
   SkillDef,
   SkillHandler,
+  SkillVersionEntry,
   ToolContext,
 } from '../types/index.ts';
 
@@ -40,6 +42,18 @@ interface LoaderOptions {
   registry?: string | undefined;
   /** Override the execution model. Defaults to env LOADER_MODE or 'sandbox'. */
   mode?: 'sandbox' | 'trust';
+  /**
+   * Per-skill version pins. Keys are slugs, values are semver range strings
+   * understood by `client/semver-pin.ts` (`^1.2.3`, `~1.2.0`, `1.2.3`, `*`).
+   * If a slug is pinned, the loader resolves the highest matching version
+   * from the manifest's `tools[].versions[]` and loads `skills/<slug>@<v>.mjs`
+   * instead of the default `skills/<slug>.mjs` (latest). The integrity
+   * check uses the per-version sha256 from the manifest.
+   *
+   * Slugs not in the map use the latest bundle (current behaviour).
+   * Throws at load time if a pinned slug has no matching version.
+   */
+  pin?: Record<string, string>;
 }
 
 interface LoadedRegistry {
@@ -79,6 +93,7 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
   const base = (opts.registry ?? DEFAULT_REGISTRY).replace(/\/$/, '');
   const mode: 'sandbox' | 'trust' =
     opts.mode ?? (process.env['LOADER_MODE'] === 'trust' ? 'trust' : 'sandbox');
+  const pin = opts.pin ?? {};
 
   let manifest: Manifest;
   try {
@@ -88,29 +103,59 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
     throw new Error(`Manifest load failed: ${msg}`);
   }
 
-  // Cache compiled-or-imported handlers per slug. For sandbox mode we cache
-  // the raw bundle source (sandbox.ts has its own compile-cache that keys by
-  // source). For trust mode we cache the imported module's default export.
+  /**
+   * Resolve which (source, sha256) the loader should fetch for a tool.
+   * Without a pin: latest (top-level fields). With a pin: the highest
+   * matching entry from `tool.versions[]`. Throws if no version satisfies.
+   */
+  function resolveSource(tool: SkillDef): { source: string; sha256: string | undefined } {
+    const range = pin[tool.slug];
+    if (!range) return { source: tool.source, sha256: tool.sha256 };
+    const versions: SkillVersionEntry[] = tool.versions ?? [];
+    if (versions.length === 0) {
+      throw new Error(
+        `pin error: ${tool.slug} pinned to "${range}" but the manifest has no versions[] ` +
+        `(skill was published before per-skill versioning landed, or the dist branch ` +
+        `lost its archive). Drop the pin or rebuild the registry.`,
+      );
+    }
+    const picked = resolveBest(versions.map((v) => v.version), range);
+    if (!picked) {
+      throw new Error(
+        `pin error: ${tool.slug} pinned to "${range}" but no archived version matches. ` +
+        `Available: ${versions.map((v) => v.version).join(', ')}.`,
+      );
+    }
+    const entry = versions.find((v) => v.version === picked)!;
+    return { source: entry.source, sha256: entry.sha256 };
+  }
+
+  // Cache compiled-or-imported handlers per (slug, source) — different pins
+  // for the same slug should not share a cache entry. For sandbox mode we
+  // cache the raw bundle source (sandbox.ts has its own compile-cache that
+  // keys by source). For trust mode we cache the imported module's default.
   const trustCache = new Map<string, SkillHandler>();
   const bundleCache = new Map<string, string>();
 
-  async function getBundle(tool: SkillDef): Promise<string> {
-    if (bundleCache.has(tool.slug)) return bundleCache.get(tool.slug)!;
-    const code = await readResource(`${base}/${tool.source}`);
+  async function getBundle(tool: SkillDef): Promise<{ code: string; source: string }> {
+    const { source, sha256 } = resolveSource(tool);
+    const cacheKey = `${tool.slug}::${source}`;
+    if (bundleCache.has(cacheKey)) return { code: bundleCache.get(cacheKey)!, source };
+    const code = await readResource(`${base}/${source}`);
     // Integrity check: when the manifest declares a sha256, refuse to load a
     // bundle whose contents don't match. Same defence-in-depth as Phase 1
     // (the sandbox doesn't replace the integrity check; it complements it).
-    if (tool.sha256) {
+    if (sha256) {
       const actual = createHash('sha256').update(code, 'utf8').digest('hex');
-      if (actual !== tool.sha256) {
+      if (actual !== sha256) {
         throw new Error(
-          `bundle integrity check failed: ${tool.source} has sha256 ${actual.slice(0, 16)}… ` +
-          `but manifest expected ${tool.sha256.slice(0, 16)}…. Refusing to load.`,
+          `bundle integrity check failed: ${source} has sha256 ${actual.slice(0, 16)}… ` +
+          `but manifest expected ${sha256.slice(0, 16)}…. Refusing to load.`,
         );
       }
     }
-    bundleCache.set(tool.slug, code);
-    return code;
+    bundleCache.set(cacheKey, code);
+    return { code, source };
   }
 
   const commands = manifest.tools.map((tool) =>
@@ -118,7 +163,7 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
       try {
         const input = parseArgvAgainstSchema(args, ctx.stdin, tool.inputSchema);
         const toolCtx = makeToolCtx(tool, ctx);
-        const code = await getBundle(tool);
+        const { code, source } = await getBundle(tool);
 
         let output: unknown;
         if (mode === 'sandbox') {
@@ -130,12 +175,15 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
           output = r.value;
         } else {
           // trust mode (LOADER_MODE=trust) — Phase 1 behaviour, debug only.
-          if (!trustCache.has(tool.slug)) {
+          // Cache key includes the source path so different pins for the
+          // same slug don't conflate.
+          const trustKey = `${tool.slug}::${source}`;
+          if (!trustCache.has(trustKey)) {
             const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
             const mod = (await import(dataUrl)) as { default: SkillHandler };
-            trustCache.set(tool.slug, mod.default);
+            trustCache.set(trustKey, mod.default);
           }
-          const handler = trustCache.get(tool.slug)!;
+          const handler = trustCache.get(trustKey)!;
           output = await handler(input, toolCtx);
         }
         return { stdout: JSON.stringify(output) + '\n', stderr: '', exitCode: 0 };

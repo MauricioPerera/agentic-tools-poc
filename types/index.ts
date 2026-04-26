@@ -74,6 +74,26 @@ export interface SkillDef {
    *  the legitimate output of their skill — url2md (markdown extraction) is
    *  the natural injection vector and ships with a tight cap by default. */
   outputCap?: number;
+  /** Historical versions of this skill, in semver order (highest first).
+   *  Each entry corresponds to a `dist/skills/<slug>@<version>.mjs` bundle
+   *  preserved across builds. The top-level `source` + `sha256` always
+   *  point at the latest version; consumers that want to pin a specific
+   *  version pass `loadRegistry({ pin: { <slug>: '<range>' }})` and the
+   *  loader resolves the range against this list.
+   *
+   *  Always populated by `scripts/manifest.ts` when versioned bundles
+   *  exist; absent on fresh builds where only the latest exists. */
+  versions?: SkillVersionEntry[];
+}
+
+export interface SkillVersionEntry {
+  /** Semver of this archived bundle (matches the `version` field in the
+   *  tool.yaml at the time it was published). */
+  version: string;
+  /** Path within the manifest base URL (e.g. `skills/echo-pretty@1.0.0.mjs`). */
+  source: string;
+  /** sha256 of the bundle bytes — same integrity contract as the top-level. */
+  sha256: string;
 }
 
 export interface Manifest {

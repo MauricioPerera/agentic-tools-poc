@@ -706,6 +706,55 @@ in ~150ms cold, sub-ms warm via Cache API.
 `npm run smoke` runs every skill against its real upstream API as a
 sanity check (network-dependent, not part of `npm run all`).
 
+### Per-skill version pinning
+
+The default load picks the latest version of every skill (current
+behaviour, no API change). Consumers that want to lock a specific skill
+at a known-good version pass a `pin` map:
+
+```ts
+import { loadRegistry } from 'agentic-tools-poc/client/loader';
+
+const { manifest, commands } = await loadRegistry({
+  pin: {
+    'echo-pretty': '^1.0.0',     // accept any 1.x
+    'url2md':      '~1.2.0',     // patches only — refuse 1.3.0
+    'ip-info':     '1.1.0',      // exact match
+    'weather':     'latest',     // explicit latest (same as omitting the entry)
+  },
+});
+```
+
+Range syntax follows the npm subset listed in `client/semver-pin.ts`:
+`X.Y.Z` (exact), `^X.Y.Z` (compat with X.Y.Z, locks the major), `~X.Y.Z`
+(only patches, locks the minor), `*` / `latest` (any).
+
+How it works under the hood:
+
+- `manifest.json` carries a `tools[].versions[]` array of every archived
+  release, sorted highest-first, each with its own `sha256`.
+- The loader resolves the pin against `versions[]`, fetches
+  `skills/<slug>@<version>.mjs`, and verifies its sha256 against the
+  versioned entry — not against the latest's. Different pins for the
+  same skill across two `loadRegistry()` calls have isolated caches.
+- The build pipeline copies each new release into
+  `dist/skills/<slug>@<version>.mjs` and refuses to publish if a bundle
+  changes without bumping `tool.yaml.version` (the bump-without-bump
+  guard). Old archive files are preserved on the `dist` branch
+  indefinitely — bundles are tiny (the full registry is ~5 KB), so
+  retention costs nothing.
+
+Pin errors surface at exec time with actionable messages:
+
+```
+$ MODEL=... node client/agent.ts
+echoer: pin error: echoer pinned to "^2.0.0" but no archived version matches.
+        Available: 1.1.0, 1.0.0.
+```
+
+If a pinned skill lives in a manifest that predates per-skill versioning
+(no `versions[]`), the loader fails fast with a migration hint.
+
 ## Type generation from tool.yaml
 
 `npm run codegen` reads each `registry/skills/<slug>/tool.yaml` and emits
@@ -830,7 +879,7 @@ Runtime
    `compare.ts` reports input/output split + USD cost per query
 
 Quality
-- ✅ 241 tests (`node:test`, zero extra deps)
+- ✅ 290 tests (`node:test`, zero extra deps)
    — unit tests for every parser, converter, and lint rule
    — 18 MCP wire-format integration tests (spawn server subprocess)
    — codegen drift integration test (catches stale generated types in CI)
@@ -838,11 +887,14 @@ Quality
    — model-adapter test for every Workers AI response shape
    — pricing math + cost-formatting tests
    — V5 untrusted-output suite: ANSI strip, control-char strip, cap math,
-     wrapper format, slug-aware lookup
+     wrapper format, slug-aware lookup, XML-attr injection guard
    — **sandbox suite (14 tests)**: parity for all 6 shipped skills inside
      QuickJS, security boundary (node:fs undefined, process undefined,
      env-leak, infinite-loop interrupt, network policy), bridge
      correctness (ctx.log, error propagation, non-JSON return)
+   — **versioning suite (27 tests)**: semver-pin range matching
+     (^/~/exact/*), loader pin resolution end-to-end, manifest builder
+     bump-without-bump detection, archive preservation across rebuilds
 - ✅ Skill linter with 9 semantic rules derived from the empirical A/B
    (8 shape + 1 security: `forbidden-imports` blocks `node:fs`,
    `node:child_process`, `process.env`, etc. — defence-in-depth with the
@@ -854,6 +906,14 @@ Distribution
    it directly. `main` stays free of generated artefacts.
 - ✅ `.gitattributes` normalizes line endings (LF) so Windows contributors
    stop producing CRLF/LF churn
+- ✅ **Per-skill versioning**: every release of a skill is archived as
+   `dist/skills/<slug>@<version>.mjs` (preserved indefinitely on the
+   `dist` branch). `manifest.json` exposes `tools[].versions[]` with the
+   sha256 of each archive. Loader accepts a `pin` map
+   (`loadRegistry({ pin: { 'echo-pretty': '^1.0.0' } })`) and resolves
+   the highest matching version — verified against its own sha256, not
+   the latest's. Build pipeline detects bundle-changed-without-version-
+   bump and refuses to publish
 
 Validated
 - ✅ End-to-end against 5 Workers AI models: Granite 4.0 H Micro, Hermes
@@ -894,8 +954,6 @@ Not yet (with tracking issues)
 - ⏭ Per-skill capability flags (`network`, `env`, future `crypto`) +
    memory cap per VM — Phase 3 hardening on top of the V2 sandbox
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs
-- ⏭ [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2)
-   Per-skill versioning — pin one skill at known-good while others move
 - ⏭ [#3](https://github.com/MauricioPerera/agentic-tools-poc/issues/3)
    Wider eval suite (N=3 → N=20+ across 6 buckets) — turns the cost
    matrix from "directional hypothesis" into "defendable recommendation"

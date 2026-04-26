@@ -38,6 +38,29 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Seed dist/ with archived versions from the dist branch
+        # Per-skill versioning (#2): the manifest builder must see existing
+        # `dist/skills/<slug>@<v>.mjs` archive files to (a) detect any
+        # bump-without-bump, and (b) populate `tools[].versions[]`. The
+        # archive lives on the dist branch; pull it forward into the main
+        # checkout's dist/ before npm run all builds + manifests.
+        # build.ts is now selective — it wipes only `<slug>.mjs` (latest)
+        # and leaves `<slug>@<v>.mjs` (archive) intact.
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin dist > /dev/null 2>&1; then
+            mkdir -p dist/skills
+            git fetch origin dist
+            # Use git archive to extract only skills/*@*.mjs files from the
+            # dist branch tree, without checking it out.
+            git --git-dir=.git archive --format=tar origin/dist -- 'skills/' \
+              | tar -xf - -C dist/ --wildcards 'skills/*@*.mjs' || true
+            count=$(find dist/skills -name '*@*.mjs' 2>/dev/null | wc -l)
+            echo "✓ seeded $count archived version(s) from dist branch"
+          else
+            echo "no dist branch yet — first build, no archive to seed"
+          fi
+
       - name: Run full pipeline (typecheck, test, validate, lint, codegen:check, build, manifest)
         run: npm run all
 
@@ -72,8 +95,15 @@ jobs:
             git rm -rf . 2>/dev/null || true
           fi
 
-          # Replace contents with the freshly-built dist/
-          rm -rf ./skills ./manifest.json
+          # Replace manifest + latest skill files. Per-skill archive
+          # (`skills/<slug>@<v>.mjs`) is preserved indefinitely — never
+          # delete archived versions, only overlay new latest + new
+          # archive entries from this build.
+          rm -f ./manifest.json
+          # Remove latest-version files only; keep archive.
+          if [ -d ./skills ]; then
+            find ./skills -maxdepth 1 -type f -name '*.mjs' ! -name '*@*' -delete
+          fi
           cp -r "$GITHUB_WORKSPACE/dist/." .
 
           # README so visitors landing on the branch know what they're seeing

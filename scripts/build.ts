@@ -5,7 +5,7 @@
  *
  * Output is a default-exporting ESM module that any ESM host can `import()`.
  */
-import { readdirSync, mkdirSync, existsSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, mkdirSync, existsSync, unlinkSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -14,8 +14,21 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SKILLS_DIR = join(ROOT, 'registry', 'skills');
 const DIST_DIR   = join(ROOT, 'dist', 'skills');
 
-if (existsSync(DIST_DIR)) rmSync(DIST_DIR, { recursive: true });
 mkdirSync(DIST_DIR, { recursive: true });
+
+// Selectively wipe latest-version files (`<slug>.mjs`) before rebuilding.
+// We DO NOT touch archived `<slug>@<version>.mjs` files — those are the
+// per-skill versioning archive that must persist across builds (CI brings
+// them forward from the dist branch; local dev preserves them across
+// `npm run build`). Manifest builder later writes any new archive entry
+// when it sees a fresh version.
+if (existsSync(DIST_DIR)) {
+  for (const f of readdirSync(DIST_DIR)) {
+    if (!f.endsWith('.mjs')) continue;
+    if (f.includes('@')) continue; // archived <slug>@<v>.mjs — preserve
+    unlinkSync(join(DIST_DIR, f));
+  }
+}
 
 const slugs = readdirSync(SKILLS_DIR);
 const results: Array<{ slug: string; size: number }> = [];
