@@ -28,8 +28,19 @@ export interface LintResult {
   suggestion?: string;
 }
 
-/** A LintRule is a pure function: skill → findings. */
-export type LintRule = (skill: SkillDef) => LintResult[];
+/**
+ * Optional context that some rules need (e.g. handler source for
+ * forbidden-imports). Rules ignore fields they don't care about. The
+ * `lintSkill` aggregator passes whatever it has; `null`/`undefined` means
+ * "lint by tool.yaml only".
+ */
+export interface LintContext {
+  /** Concatenated source of the skill's handler files (relative to skill dir). */
+  handlerSource?: string;
+}
+
+/** A LintRule is a pure function: skill (+ optional context) → findings. */
+export type LintRule = (skill: SkillDef, ctx?: LintContext) => LintResult[];
 
 // ---------------------------------------------------------------------------
 // Rule implementations
@@ -238,6 +249,85 @@ export const networkSkillNoPolicy: LintRule = (skill) => {
   ];
 };
 
+/**
+ * R9 — `forbidden-imports`
+ * Phase 1 trust posture (THREAT-MODEL.md V2): handlers run in-process via
+ * data: URL import. The `ctx` object is a *convention*, not a sandbox — a
+ * handler can `import('node:fs')`, `import('node:child_process')`, or read
+ * `process.env` directly and bypass every guarantee the loader makes.
+ *
+ * Until QuickJS sandboxing lands (Phase 2), the only defense is to detect
+ * forbidden imports statically and block merge. This won't stop a motivated
+ * attacker (they can use `import(\`no\${'de'}:fs\`)`, eval, or fetch +
+ * code injection), but it raises the cost of "accidentally exfiltrating
+ * skill" and creates an audit trail in code review.
+ *
+ * Forbidden modules are ones that grant capabilities the loader's curated
+ * `ctx` deliberately withholds: filesystem, process spawn, raw sockets,
+ * code generation, child threads.
+ */
+const FORBIDDEN_MODULES = [
+  'node:fs', 'node:fs/promises',
+  'node:child_process',
+  'node:net', 'node:tls', 'node:dgram', 'node:dns',
+  'node:vm',
+  'node:worker_threads',
+  'node:cluster',
+  'node:os',          // hostname / userInfo / network interfaces
+  'node:process',     // explicit process module (process.env access also flagged below)
+];
+
+// Detect both `import 'node:fs'` (static) and `import('node:fs')` (dynamic).
+// The pattern allows any quoting style and any leading whitespace.
+const FORBIDDEN_RE = new RegExp(
+  `(?:^|[^a-zA-Z0-9_$])(?:import\\s*\\(?\\s*|from\\s+|require\\s*\\(\\s*)` +
+  `['"\`](${FORBIDDEN_MODULES.map((m) => m.replace(/\//g, '\\/')).join('|')})['"\`]`,
+  'g',
+);
+
+const PROCESS_ENV_RE = /\bprocess\s*\.\s*env\b/g;
+
+export const forbiddenImports: LintRule = (_skill, ctx) => {
+  const src = ctx?.handlerSource;
+  if (!src) return [];
+  const out: LintResult[] = [];
+
+  const seen = new Set<string>();
+  for (const match of src.matchAll(FORBIDDEN_RE)) {
+    const mod = match[1];
+    if (mod && !seen.has(mod)) {
+      seen.add(mod);
+      out.push({
+        rule: 'forbidden-imports',
+        severity: 'error',
+        field: `$.handler`,
+        message: `Handler imports forbidden module "${mod}".`,
+        suggestion:
+          `Phase 1 has no sandbox — this import grants capabilities the ` +
+          `loader's curated ctx deliberately withholds (see THREAT-MODEL.md V2). ` +
+          `If you genuinely need this capability, propose adding it to ctx ` +
+          `instead of importing it directly. Phase 2 will move execution to ` +
+          `QuickJS where these imports return undefined.`,
+      });
+    }
+  }
+
+  if (PROCESS_ENV_RE.test(src)) {
+    out.push({
+      rule: 'forbidden-imports',
+      severity: 'error',
+      field: `$.handler`,
+      message: `Handler reads \`process.env\` directly.`,
+      suggestion:
+        `Use \`ctx.env\` instead — it's filtered through the skill's ` +
+        `\`requiredEnv\` allowlist. Direct \`process.env\` access bypasses ` +
+        `that gate and exposes every secret the host process holds.`,
+    });
+  }
+
+  return out;
+};
+
 // ---------------------------------------------------------------------------
 // Aggregator — runs every rule and collects results
 
@@ -250,11 +340,25 @@ export const ALL_RULES: LintRule[] = [
   summaryTooLong,
   optionalsWithoutTuning,
   networkSkillNoPolicy,
+  forbiddenImports,
 ];
 
 /** Run every rule against a skill and return all findings (ordered by rule). */
-export function lintSkill(skill: SkillDef, rules: LintRule[] = ALL_RULES): LintResult[] {
-  return rules.flatMap((rule) => rule(skill));
+export function lintSkill(
+  skill: SkillDef,
+  rulesOrCtx?: LintRule[] | LintContext,
+  ctxArg?: LintContext,
+): LintResult[] {
+  // Backwards-compat: callers may pass either (skill, rules) or (skill, ctx).
+  let rules: LintRule[] = ALL_RULES;
+  let ctx: LintContext | undefined;
+  if (Array.isArray(rulesOrCtx)) {
+    rules = rulesOrCtx;
+    ctx = ctxArg;
+  } else if (rulesOrCtx) {
+    ctx = rulesOrCtx;
+  }
+  return rules.flatMap((rule) => rule(skill, ctx));
 }
 
 /** Run lint over many skills and group results by skill slug. */

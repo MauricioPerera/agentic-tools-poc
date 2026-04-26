@@ -468,6 +468,19 @@ arguments) — the new `client/model-adapter.ts` normalizes both.
 query in both modes** without per-model tuning. This is a single
 benchmark, not a generalization — but it's a striking single benchmark.
 
+**Discipline note**: a "correct" answer can come from invoking the right
+tool *or* from the model bypassing the tool entirely and answering from
+training knowledge. `compare.ts` now distinguishes these via the `outcome`
+column: `via_tool` (correct, used a tool), `without_tool` (correct, no
+tool used — discipline gap), `wrong_with_tool`, `wrong_no_tool`. Q1
+`uppercase` is the canonical "without_tool" trap — every model can answer
+it from training knowledge, but Granite + Llama still go through the
+registry, while Gemma sometimes skips it. The distinction matters because
+"correct without tool" doesn't measure tool-use reliability — it measures
+training-knowledge coverage. Tracking issue
+[#3](https://github.com/MauricioPerera/agentic-tools-poc/issues/3) plans
+a 6-bucket suite to make these dimensions separately measurable.
+
 ### Cost per query — same workload, same correct answer
 
 For Q1 ("convert phrase to uppercase"), classic mode, 2 rounds, ~600 in
@@ -744,10 +757,13 @@ nested objects, optional vs required, and JSDoc comments from `description`.
 
 ## Skill linter
 
-`npm run lint` runs a semantic linter over every `tool.yaml`. It encodes
-the antipatterns observed empirically when running real models against the
-registry — e.g. optional fields without descriptions cause Hermes 7B to
-invent values. Eight rules across three severities:
+`npm run lint` runs a semantic linter over every `tool.yaml` (and the
+handler source under `src/`). Eight of the rules encode antipatterns
+observed empirically when running real models against the registry — e.g.
+optional fields without descriptions cause Hermes 7B to invent values.
+The ninth (R9) is the one security rule: it scans the handler bundle for
+imports that bypass the loader's curated `ctx`. Nine rules across three
+severities:
 
 | Rule | Severity | What it detects |
 |---|---|---|
@@ -759,6 +775,7 @@ invent values. Eight rules across three severities:
 | `summary-too-long` | warning | summary > 120 chars (lives in every tools/list) |
 | `optionals-without-tuning` | info | 2+ optional fields and no model_overrides — likely needs per-model tuning |
 | `network-skill-no-policy` | warning | network capability declared but allow list empty |
+| `forbidden-imports` | error | Handler imports `node:fs`, `node:child_process`, `node:net`, `node:vm`, etc. or reads `process.env` directly (THREAT-MODEL.md V2 partial — static check, defeats accidents and lazy bypass; runtime guarantee waits on QuickJS sandbox) |
 
 `npm run lint` exits non-zero on errors (warnings + info don't block).
 `npm run lint -- --all` shows info-severity suggestions too.
@@ -767,6 +784,9 @@ The linter found one warning on the existing registry (`ip-info.ip` was
 optional without an explicit default) which has been fixed; one info
 finding remains (`echo-pretty` has 3 optional fields and no
 `model_overrides`, suggesting per-model tuning may be worthwhile).
+R9 catches zero findings on the current registry — handlers use only
+`globalThis.fetch` and types — but the rule fires immediately on a PR
+that imports `node:fs` (regression test in `test/skill-linter.test.ts`).
 
 ## Status
 
@@ -793,15 +813,18 @@ Runtime
    `compare.ts` reports input/output split + USD cost per query
 
 Quality
-- ✅ 196 tests (`node:test`, zero extra deps)
+- ✅ 224 tests (`node:test`, zero extra deps)
    — unit tests for every parser, converter, and lint rule
-   — 17 MCP wire-format integration tests (spawn server subprocess)
+   — 18 MCP wire-format integration tests (spawn server subprocess)
    — codegen drift integration test (catches stale generated types in CI)
    — loader-integrity integration test (3 cases: clean, tampered, no-sha)
    — model-adapter test for every Workers AI response shape
    — pricing math + cost-formatting tests
-- ✅ Skill linter with 8 semantic rules derived from the empirical A/B,
-   27 unit tests
+   — V5 untrusted-output suite: ANSI strip, control-char strip, cap math,
+     wrapper format, slug-aware lookup
+- ✅ Skill linter with 9 semantic rules derived from the empirical A/B
+   (8 shape + 1 security: `forbidden-imports` blocks `node:fs`,
+   `node:child_process`, `process.env`, etc.), 36 unit tests
 - ✅ smoke-test-skills.ts hits live upstream APIs (5/5 passing today)
 
 Distribution
@@ -826,22 +849,32 @@ Validated
 
 Security posture
 - ✅ V1 (hostile bundle to dist branch): mitigated by sha256 + CI gates
-- ⚠️ V2 (malicious skill author): Phase 1 trusts authors — handler can
-   `import('node:fs')` and bypass `ctx` convention; relies on PR review
+- 🟡 V2 (malicious skill author): linter rule R9 `forbidden-imports`
+   blocks merge on `node:fs`, `node:child_process`, `node:net`,
+   `process.env`, etc. (static, regex-based — defeats accidental misuse
+   and the lazy attacker; runtime guarantee waits on Phase 2 sandbox,
+   tracked at [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1))
 - ✅ V3 (dependency confusion): `npm ci` + zero runtime deps in skills
 - ⚠️ V4 (network attacker): TLS + sha256 protects bundles, manifest
    signing pending in Phase 2
-- ⏭ V5 (prompt injection in skill output): no defense yet; Phase 2 R&D
+- 🟡 V5 (prompt injection in skill output): **strawman shipped** —
+   skill output wrapped in `<skill-output skill="X" trust="untrusted">`,
+   per-skill `outputCap` (url2md → 4 KB), ANSI/control-char strip,
+   system-prompt fragment teaches the model to treat wrapped content as
+   data. Not full prompt-injection defense (open research problem) —
+   raises cost of casual injection, bounds payload size, makes injection
+   visible in traces
 
-Not yet
-- ⏭ Phase 2 sandboxed execution via just-bash's `js-exec` (QuickJS) for
-   community-contributed skills — closes V2 + V5 above
+Not yet (with tracking issues)
+- ⏭ [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)
+   QuickJS sandbox for handler execution — closes V2 (real, runtime)
 - ⏭ Manifest signing (ed25519) — closes V4
 - ⏭ MCP `resources/` exposing tool READMEs as agent-readable docs
-- ⏭ Per-skill versioning (today every skill shares the manifest's git SHA)
-- ⏭ Wider eval suite — current is 3 queries × 5 models; the headline
-   "Granite is the cheapest correct stack" deserves more queries for
-   confidence beyond "anecdote with rigour"
+- ⏭ [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2)
+   Per-skill versioning — pin one skill at known-good while others move
+- ⏭ [#3](https://github.com/MauricioPerera/agentic-tools-poc/issues/3)
+   Wider eval suite (N=3 → N=20+ across 6 buckets) — turns the cost
+   matrix from "directional hypothesis" into "defendable recommendation"
 - ⏭ Decide whether `outputSchema.required` should be enforced strictly
    in the codegen (today optional fields produce all-`?:` interfaces;
    tightening would catch more handler bugs at the cost of stricter

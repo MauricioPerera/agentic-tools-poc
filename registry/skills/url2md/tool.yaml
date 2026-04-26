@@ -25,6 +25,13 @@ outputSchema:
 networkPolicy:
   allow: [url2md.automators.work]
 
+# Natural prompt-injection vector: this skill returns whatever markdown the
+# upstream page contains, which can include adversarial text aimed at the
+# calling LLM. Cap the stdout that lands in the agent context (THREAT-MODEL.md
+# V5). 4 KB fits typical extracted articles; longer pages truncate cleanly
+# instead of becoming an injection payload of arbitrary length.
+outputCap: 4096
+
 # Hermes (and similar 7B older models) over-fill optional schema fields and
 # may pass `raw: true` even when not needed. The override removes the
 # parameter entirely and the handler still auto-falls-back to raw=1 on 422.

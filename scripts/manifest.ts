@@ -49,6 +49,7 @@ for (const slug of readdirSync(SKILLS_DIR)) {
     requiredEnv:     meta.requiredEnv ?? [],
     networkPolicy:   meta.networkPolicy ?? { allow: [] },
     model_overrides: meta.model_overrides ?? {},
+    ...(meta.outputCap != null ? { outputCap: meta.outputCap } : {}),
     source:          bundle,
     sha256,
   });

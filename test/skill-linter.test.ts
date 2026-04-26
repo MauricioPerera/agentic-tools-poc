@@ -16,6 +16,7 @@ import {
   summaryTooLong,
   optionalsWithoutTuning,
   networkSkillNoPolicy,
+  forbiddenImports,
   lintSkill,
   summarize,
   ALL_RULES,
@@ -253,6 +254,97 @@ test('R8: silent when skill is not network-capable', () => {
 });
 
 // ---------------------------------------------------------------------------
+// R9 — forbidden-imports
+
+test('R9: silent when no handler source provided (legacy callers)', () => {
+  const r = forbiddenImports(skill());
+  assert.deepEqual(r, []);
+});
+
+test('R9: silent for clean handler (only fetch + types)', () => {
+  const src = `
+    import type { SkillHandler } from '../../../../types/index.ts';
+    const handler: SkillHandler = async (input, ctx) => {
+      const r = await ctx.fetch('https://example.com');
+      return await r.json();
+    };
+    export default handler;
+  `;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.deepEqual(r, []);
+});
+
+test('R9: ERROR on static import of node:fs', () => {
+  const src = `import { readFileSync } from 'node:fs';\nexport default async () => {};`;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.equal(r.length, 1);
+  assert.equal(r[0]!.severity, 'error');
+  assert.equal(r[0]!.rule, 'forbidden-imports');
+  assert.match(r[0]!.message, /node:fs/);
+});
+
+test('R9: ERROR on dynamic import of node:child_process', () => {
+  const src = `export default async () => { const cp = await import('node:child_process'); cp.execSync('whoami'); };`;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.equal(r.length, 1);
+  assert.match(r[0]!.message, /node:child_process/);
+});
+
+test('R9: ERROR on require() of node:net', () => {
+  const src = `const net = require("node:net");\nexport default async () => {};`;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.equal(r.length, 1);
+  assert.match(r[0]!.message, /node:net/);
+});
+
+test('R9: ERROR on direct process.env access', () => {
+  const src = `export default async () => { return { secret: process.env.SECRET }; };`;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.equal(r.length, 1);
+  assert.match(r[0]!.message, /process\.env/);
+});
+
+test('R9: ERROR aggregates: multiple distinct forbidden imports', () => {
+  const src = `
+    import 'node:fs';
+    import { spawn } from 'node:child_process';
+    export default async () => { return process.env; };
+  `;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  // 2 imports + 1 process.env = 3 findings
+  assert.equal(r.length, 3);
+  const messages = r.map((x) => x.message).join(' ');
+  assert.match(messages, /node:fs/);
+  assert.match(messages, /node:child_process/);
+  assert.match(messages, /process\.env/);
+});
+
+test('R9: dedupes the same forbidden import seen multiple times', () => {
+  const src = `
+    import { readFileSync } from 'node:fs';
+    import { writeFileSync } from 'node:fs';
+    export default async () => { import('node:fs'); };
+  `;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  // Three references to node:fs but only one finding for the module.
+  assert.equal(r.length, 1);
+  assert.match(r[0]!.message, /node:fs/);
+});
+
+test('R9: silent when string "node:fs" appears inside a comment but not imported', () => {
+  // Heuristic limitation: the regex requires `import|from|require` context, so
+  // a literal string mention in a comment shouldn't trip it. Documents the
+  // false-negative boundary so a future stricter rule is a deliberate choice.
+  const src = `
+    // we deliberately avoid 'node:fs' here
+    const note = 'do not import node:fs';
+    export default async () => {};
+  `;
+  const r = forbiddenImports(skill(), { handlerSource: src });
+  assert.deepEqual(r, []);
+});
+
+// ---------------------------------------------------------------------------
 // Aggregator
 
 test('lintSkill: runs all rules and returns combined results', () => {
@@ -307,6 +399,13 @@ test('summarize: counts findings by severity', () => {
 });
 
 test('ALL_RULES: every rule is exported in the registry', () => {
-  // Sanity check that the aggregator runs everything.
-  assert.ok(ALL_RULES.length >= 8);
+  // Sanity check that the aggregator runs everything (R1..R9).
+  assert.ok(ALL_RULES.length >= 9);
+});
+
+test('lintSkill: passes through ctx to context-aware rules', () => {
+  const src = `import 'node:fs';\nexport default async () => {};`;
+  const results = lintSkill(skill(), { handlerSource: src });
+  const forbidden = results.filter((r) => r.rule === 'forbidden-imports');
+  assert.equal(forbidden.length, 1);
 });

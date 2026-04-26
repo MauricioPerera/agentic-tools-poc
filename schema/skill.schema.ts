@@ -28,6 +28,8 @@ export const SKILL_SCHEMA: JSONSchema = {
     model_overrides: {
       type: 'object',
     },
+    // Maximum stdout length forwarded to the LLM (THREAT-MODEL.md V5 cap).
+    outputCap: { type: 'integer' },
   },
 };
 
@@ -40,7 +42,10 @@ export function validate(schema: JSONSchema, data: unknown, path = '$'): string[
 
   if (schema.type) {
     const actual = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
-    if (actual !== schema.type) {
+    // JSON schema `integer` maps to JS `number` — accept any number that's
+    // an integer. Mismatched float against integer is still a fail.
+    const okInteger = schema.type === 'integer' && actual === 'number' && Number.isInteger(data as number);
+    if (actual !== schema.type && !okInteger) {
       errs.push(`${path}: expected ${schema.type}, got ${actual}`);
       return errs;
     }

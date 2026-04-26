@@ -26,6 +26,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.ts';
+import { lastPipelineStage } from './smart-bash.ts';
+import {
+  wrapUntrustedOutput,
+  outputCapForSkill,
+  UNTRUSTED_OUTPUT_FRAGMENT,
+} from './untrusted-output.ts';
 
 const REGISTRY = process.env.REGISTRY;
 
@@ -59,7 +65,8 @@ async function main(): Promise<void> {
           `pipeline output is returned. Use \`tool_schema --slug <name>\` to ` +
           `introspect any registry tool's input/output JSONSchema.\n\n` +
           `Tool flags follow --key value or --key=value form. Boolean flags can ` +
-          `be passed bare (--upper) or as --upper=true.`,
+          `be passed bare (--upper) or as --upper=true.\n\n` +
+          UNTRUSTED_OUTPUT_FRAGMENT,
         inputSchema: {
           type: 'object',
           required: ['command'],
@@ -93,9 +100,25 @@ async function main(): Promise<void> {
       if (!cmd) return errorResult('command is required');
       try {
         const result = await bash.exec(cmd);
+        let stdout = result.stdout || '';
+
+        // V5 strawman: when the pipeline ends in a registry skill, the
+        // stdout is untrusted output. Wrap + cap before returning to the
+        // host. Pure-shell pipelines (jq/grep/awk only) skip wrapping.
+        const lastStage = lastPipelineStage(cmd);
+        const lastSlug = manifest.tools.find(
+          (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
+        )?.slug ?? null;
+        if (lastSlug && stdout) {
+          stdout = wrapUntrustedOutput(stdout, {
+            slug: lastSlug,
+            outputCap: outputCapForSkill(lastSlug, manifest.tools),
+          });
+        }
+
         return {
           content: [
-            { type: 'text', text: result.stdout || '(no stdout)' },
+            { type: 'text', text: stdout || '(no stdout)' },
             ...(result.stderr ? [{ type: 'text' as const, text: `stderr:\n${result.stderr}` }] : []),
             ...(result.exitCode !== 0 ? [{ type: 'text' as const, text: `exitCode: ${result.exitCode}` }] : []),
           ],

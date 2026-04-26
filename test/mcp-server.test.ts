@@ -36,6 +36,12 @@ if (!existsSync(join(DIST, 'manifest.json'))) {
   );
 }
 
+/** Strip the V5 untrusted-output envelope so tests can assert on the inner payload. */
+function unwrapSkillOutput(text: string): string {
+  const m = text.match(/^<skill-output[^>]*>\n([\s\S]*)\n<\/skill-output>$/);
+  return m ? m[1]! : text;
+}
+
 let client: Client;
 
 before(async () => {
@@ -97,11 +103,27 @@ test('mcp-server: bash runs echo-pretty with text + upper, returns transformed J
   const content = r.content as Array<{ type: string; text: string }>;
   assert.ok(content.length > 0, 'expected at least one content block');
   const stdout = content[0]!.text;
-  assert.match(stdout, /HELLO MCP/);
-  // The handler returns JSON; verify the wire format wraps it as text
-  const parsed = JSON.parse(stdout) as { text: string; length: number };
+  // Pipeline ends in echo-pretty (a registry skill), so V5 wraps it.
+  assert.match(stdout, /^<skill-output skill="echo-pretty" trust="untrusted">/);
+  const inner = unwrapSkillOutput(stdout);
+  assert.match(inner, /HELLO MCP/);
+  const parsed = JSON.parse(inner) as { text: string; length: number };
   assert.equal(parsed.text, 'HELLO MCP');
   assert.equal(parsed.length, 9);
+});
+
+test('mcp-server: bash pure-shell pipeline (no registry tool last) is NOT wrapped', async () => {
+  // V5 contract: only register-skill output is wrapped. A pure shell pipeline
+  // produces data shaped by the agent itself — wrapping it would lie about
+  // provenance and bloat token usage.
+  const r = await client.callTool({
+    name: 'bash',
+    arguments: { command: `echo "hello" | tr '[:lower:]' '[:upper:]'` },
+  });
+  assert.equal(r.isError ?? false, false);
+  const text = (r.content as Array<{ text: string }>)[0]!.text;
+  assert.doesNotMatch(text, /<skill-output/);
+  assert.match(text, /HELLO/);
 });
 
 test('mcp-server: bash composes registry tool with unix pipeline', async () => {

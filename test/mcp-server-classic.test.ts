@@ -30,6 +30,12 @@ if (!existsSync(join(DIST, 'manifest.json'))) {
   );
 }
 
+/** Strip the V5 untrusted-output envelope so tests can assert on the inner payload. */
+function unwrapSkillOutput(text: string): string {
+  const m = text.match(/^<skill-output[^>]*>\n([\s\S]*)\n<\/skill-output>$/);
+  return m ? m[1]! : text;
+}
+
 let client: Client;
 
 before(async () => {
@@ -80,7 +86,9 @@ test('classic: echo-pretty invoked directly with structured args', async () => {
   });
   assert.equal(r.isError ?? false, false);
   const stdout = (r.content as Array<{ text: string }>)[0]!.text;
-  assert.match(stdout, /CLASSIC MODE/);
+  // Stdout is wrapped in the V5 untrusted-output delimiter (skill="echo-pretty").
+  assert.match(stdout, /^<skill-output skill="echo-pretty" trust="untrusted">/);
+  assert.match(unwrapSkillOutput(stdout), /CLASSIC MODE/);
 });
 
 test('classic: echo-pretty with prefix passes the flag through correctly', async () => {
@@ -90,7 +98,7 @@ test('classic: echo-pretty with prefix passes the flag through correctly', async
   });
   assert.equal(r.isError ?? false, false);
   const stdout = (r.content as Array<{ text: string }>)[0]!.text;
-  const parsed = JSON.parse(stdout) as { text: string };
+  const parsed = JSON.parse(unwrapSkillOutput(stdout)) as { text: string };
   assert.equal(parsed.text, '>> X');
 });
 
@@ -120,6 +128,6 @@ test('classic: bare bool flag handled correctly via inputToArgv', async () => {
     arguments: { text: 'foo', upper: true },
   });
   assert.equal(r.isError ?? false, false);
-  const parsed = JSON.parse((r.content as Array<{ text: string }>)[0]!.text) as { text: string };
+  const parsed = JSON.parse(unwrapSkillOutput((r.content as Array<{ text: string }>)[0]!.text)) as { text: string };
   assert.equal(parsed.text, 'FOO');
 });

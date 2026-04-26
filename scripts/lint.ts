@@ -39,7 +39,19 @@ for (const slug of slugs) {
   const yamlPath = join(SKILLS_DIR, slug, 'tool.yaml');
   if (!existsSync(yamlPath)) continue;
   const skill = parseYaml(readFileSync(yamlPath, 'utf8')) as SkillDef;
-  const results = lintSkill(skill);
+
+  // Concatenate every .ts source file under registry/skills/<slug>/src
+  // (excluding generated *.gen.ts) so forbidden-imports can scan them.
+  const srcDir = join(SKILLS_DIR, slug, 'src');
+  let handlerSource = '';
+  if (existsSync(srcDir)) {
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts') || f.endsWith('.gen.ts')) continue;
+      handlerSource += readFileSync(join(srcDir, f), 'utf8') + '\n';
+    }
+  }
+
+  const results = lintSkill(skill, { handlerSource });
   allReports.push({ slug, results });
   if (results.some((r) => r.severity === 'error')) hadErrors = true;
 }

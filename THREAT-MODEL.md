@@ -14,11 +14,12 @@ makes specific assumptions that this document makes explicit.
 | Posture | Phase 1 (current) | Phase 2 (planned) |
 |---|---|---|
 | Skill source | Author-controlled GitHub repo, code-reviewed via PR | Same + signed metadata |
-| Skill execution | In-process `import()` of bundle code via `data:` URL | QuickJS sandbox via just-bash `js-exec` |
+| Skill execution | In-process `import()` of bundle via `data:` URL | QuickJS sandbox ([#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)) |
 | Trust assumption | Every skill author is trusted | Skills are untrusted by default |
 | Bundle integrity | sha256 in manifest, verified before `import()` | Same + ed25519 signature on manifest |
 | Network gating | `ctx.fetch` whitelist by host | Same + outbound policy enforced by sandbox |
-| Filesystem access | None curated (handler can `import('node:fs')`) | Sandbox blocks all node: imports |
+| Filesystem access | Linter R9 flags `node:fs` etc. (static); no runtime block | Sandbox blocks all node: imports |
+| Skill output (V5) | Delimiter wrap + per-skill `outputCap` + ANSI strip | Same + sandbox-enforced cap on handler return |
 
 If you run this registry as-is for an external/untrusted agent, **Phase 1
 gives you the same trust posture as `npm install`** — you trust the
@@ -89,28 +90,31 @@ conditions or after a delay. A reviewer skims the diff and merges.
 - Every PR runs the full pipeline (`typecheck → tests → validate → lint
   → codegen:check → build → manifest`) via
   `.github/workflows/validate-pr.yml`.
-- The skill linter has 8 semantic rules but **none of them detect
-  malicious behaviour** — they catch poorly-shaped contracts, not
-  intent.
+- The skill linter now ships **R9 `forbidden-imports`** which scans
+  handler source for `node:fs`, `node:fs/promises`,
+  `node:child_process`, `node:net`, `node:tls`, `node:dgram`, `node:dns`,
+  `node:vm`, `node:worker_threads`, `node:cluster`, `node:os`,
+  `node:process`, and direct `process.env` reads. Findings are
+  **errors** that block merge in CI (`scripts/lint.ts`).
 - `tool.yaml.networkPolicy.allow` declares which hosts the skill can
   reach via `ctx.fetch`. The loader enforces this.
 
-**Phase 1 limitation** (this is the big one):
-- A handler can call `import('node:fs')`, `import('node:child_process')`,
-  or read `process.env` directly. The `ctx` object is a convention, not
-  a sandbox. Any handler author who reads our docs and ignores them gets
-  full host privileges.
-- We rely 100% on PR review to catch this. The linter does not check for
-  forbidden imports.
+**Phase 1 limitation** (still partly open):
+- The `forbidden-imports` linter is a **static, regex-based scan** —
+  motivated bypass is trivial: `import(\`no\${'de'}:fs\`)`,
+  `eval('require("node:fs")')`, fetch + `new Function(...)`, etc. The
+  rule catches the lazy attacker and the accidental case (developer
+  copy-pastes example code). It does not provide a runtime guarantee.
+- The seven other lint rules check shape, not intent.
 
-**Phase 2 plan**:
-- Add a linter rule `forbidden-import` that scans handler source for
-  `node:fs`, `node:child_process`, `node:net`, `node:vm`, etc. Warning
-  in PR; block merge.
-- Move execution to QuickJS via just-bash's `js-exec` command. QuickJS
-  has no node API surface — `import('node:fs')` is `undefined` there.
-  The handler can only do what the curated `ctx` exposes.
+**Phase 2 plan** (tracked in [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1)):
+- Move execution to QuickJS (`quickjs-emscripten`). QuickJS has no node
+  API surface — `import('node:fs')` returns undefined there. The
+  handler can only do what the curated `ctx` exposes.
 - Network policy enforced by the sandbox (not by handler convention).
+- Curated context surface decision: `fetch` (allowlisted), `env`
+  (filtered), `log`, `crypto.subtle`, `URL`/`URLSearchParams`,
+  `TextEncoder/Decoder`. Anything else opt-in per skill.
 
 ### V3 — Dependency confusion / supply-chain attack
 
@@ -175,19 +179,44 @@ output containing prompt-injection payloads aimed at the calling LLM
 agent's smart-bash observation includes this output verbatim. The next
 model turn sees the injection.
 
-**Phase 1 mitigation**: None — Phase 1 trusts skill authors not to do
-this.
+**Phase 1 mitigation** (strawman shipped — not a full defense):
+- **Delimiter wrap**: skill stdout flowing back into the agent loop is
+  wrapped in `<skill-output skill="X" trust="untrusted">…</skill-output>`
+  by `client/untrusted-output.ts`. Both MCP servers (`mcp-server.ts`,
+  `mcp-server-classic.ts`) and the comparison harness (`compare.ts`)
+  apply the wrap.
+- **System prompt teaches the contract**: a fragment is injected into
+  the system message instructing the model to treat wrapped content as
+  *data*, never as instructions — and to ignore directives the wrapped
+  content contains. This is teachable to capable models; smaller models
+  may still get hijacked.
+- **Per-skill `outputCap`**: declared in `tool.yaml`, applied before
+  wrapping. `url2md` (the natural injection vector — it returns whatever
+  markdown the upstream page contains) ships with a 4 KB cap. Default
+  cap when undeclared is 8 KB. Limits payload-size blast radius.
+- **ANSI / control-char sanitisation**: terminal escape sequences and
+  C0/C1 controls are stripped before wrapping so adversarial output
+  cannot smuggle directives past human reviewers via terminal sequences.
 
-**Phase 2 mitigation options**:
-- Strip ANSI escapes + control chars from skill output before injecting
-  into the observation (already true; bash output is plain text).
-- Wrap skill output in a delimiter the agent's system prompt teaches it
-  to treat as data, not instructions: `<skill-output skill="X">...</skill-output>`.
-- Output length cap per skill (configurable in tool.yaml). Limits
-  blast radius of long injection payloads.
+**Phase 1 limitation**:
+- Prompt-injection defense remains an **open research problem**. This
+  package raises the cost of casual injection (longer payloads
+  truncate; structural marker is visible in traces; control-char
+  smuggling is blocked) but a skilled attacker writing inside the
+  delimiter still influences the model.
+- Pure-shell pipelines (`echo … | jq`) are NOT wrapped — the data is
+  shaped by the agent itself. A pipeline ending in a registry skill IS
+  wrapped (correctness is "did the last stage produce untrusted data").
 
-These are research-grade mitigations; full prompt-injection defense is
-an open problem.
+**Phase 2 plan**:
+- Tighter sandbox-level control: with QuickJS in place, the cap can be
+  enforced at the handler-return boundary, not just at the
+  presentation layer.
+- Optional schema-typed output channel: structured returns bypass the
+  delimiter (they're parsed JSON, not text), but free-form `markdown`
+  fields stay capped + wrapped.
+- Per-skill `injectionRisk: high|low` flag in tool.yaml that drives
+  default caps and triggers extra runtime checks.
 
 ## Current trust contract — what Phase 1 promises and what it doesn't
 
@@ -225,17 +254,30 @@ loader's `sha256` check catches the latter at import time.
 - **Manifest signing** — V1 and V4 mitigations rely on this. Spec
   pending.
 - **QuickJS migration** — V2 mitigation requires moving handler
-  execution off the host process. Existing handlers may need adaptation
-  if they use APIs not available in QuickJS.
+  execution off the host process. Tracked at
+  [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1).
 - **Public key distribution** — once manifest signing exists, where
   does the public key live? Probably committed in `main` and pinned in
   the loader, with a documented rotation policy.
-- **Per-skill capabilities** — beyond `networkPolicy.allow`, future
-  skills may want filesystem allowlists, env allowlists, etc. Already
-  partially covered by `requiredEnv` but not enforced at sandbox level.
+- **Per-skill capabilities** — beyond `networkPolicy.allow` and
+  `outputCap`, future skills may want filesystem allowlists, env
+  allowlists, `injectionRisk` tagging, etc. Already partially covered
+  by `requiredEnv` but not enforced at sandbox level.
+- **Per-skill versioning** — pin a single skill at a known-good version
+  while the rest of the registry advances. Tracked at
+  [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2).
 
 ## Update history
 
 - 2026-04-26 — Initial draft. Covers V1-V5 with current Phase 1
   mitigations + Phase 2 plans. Manifest sha256 integrity shipped in
   the same commit as this document.
+- 2026-04-26 — V2 partial mitigation: linter rule R9 `forbidden-imports`
+  blocks merge on direct `node:fs`, `node:child_process`, `process.env`,
+  etc. V5 strawman: delimiter wrap (`<skill-output>` envelope) +
+  per-skill `outputCap` (url2md → 4 KB) + ANSI/control-char strip,
+  applied in both MCP servers and the comparison harness. System prompt
+  fragment teaches the model to treat wrapped content as data. Phase 2
+  work (real V2 sandbox, per-skill versioning) tracked as
+  [#1](https://github.com/MauricioPerera/agentic-tools-poc/issues/1) and
+  [#2](https://github.com/MauricioPerera/agentic-tools-poc/issues/2).

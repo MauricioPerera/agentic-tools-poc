@@ -13,11 +13,16 @@
  */
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.ts';
-import { makeObservation } from './smart-bash.ts';
+import { makeObservation, lastPipelineStage } from './smart-bash.ts';
 import { normalizeReply, tokensUsed, type TokenUsage } from './model-adapter.ts';
 import { applyOverridesToManifest, getSystemPromptFragments } from './skill-tuning.ts';
 import { parseToolCallArguments, inputToArgv, argvToShellCommand } from './arg-parser.ts';
 import { computeCost, formatCost, getPricing } from './pricing.ts';
+import {
+  wrapUntrustedOutput,
+  outputCapForSkill,
+  UNTRUSTED_OUTPUT_FRAGMENT,
+} from './untrusted-output.ts';
 import type { ChatMessage, Manifest, NormalizedReply, ToolCall } from '../types/index.ts';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
@@ -86,7 +91,19 @@ interface RunResult {
   /** True when usage.estimated was true on any round (Hermes beta). */
   anyEstimated: boolean;
   finalAnswer: string;
+  /** Did the regex match? Says nothing about how the answer was produced. */
   correct: boolean;
+  /** Number of tool_calls the model emitted across all rounds. 0 means the
+   *  model answered without ever invoking a tool — disciplinarily distinct
+   *  from "called the right tool and parsed the result", even if both pass
+   *  the same expectation regex (e.g. Gemma Q1 used training knowledge). */
+  toolCalls: number;
+  /** Bucketed outcome: combines correctness with tool-use discipline.
+   *   - 'via_tool'        — correct AND used at least one tool
+   *   - 'without_tool'    — correct AND used zero tools (training-knowledge bypass)
+   *   - 'wrong_with_tool' — wrong AND used at least one tool
+   *   - 'wrong_no_tool'   — wrong AND used zero tools */
+  outcome: 'via_tool' | 'without_tool' | 'wrong_with_tool' | 'wrong_no_tool';
 }
 
 const results: Array<{ query: string; composable: RunResult; classic: RunResult }> = [];
@@ -104,42 +121,63 @@ for (const q of QUERIES) {
 // trade-off is honest. Composable typically ships less input but more
 // output; classic is the opposite. With output usually 2-10× input price,
 // the token-count alone hides which mode is actually cheaper.
-console.log(`\n${'═'.repeat(96)}\nSUMMARY\n${'═'.repeat(96)}`);
-console.log('Query        | Mode       | Rounds |    In |   Out |   Total |    Cost  | ✓ | Answer');
-console.log('-------------|------------|-------:|------:|------:|--------:|---------:|---|---------');
+// Outcome legend: ✓ via_tool / ◷ without_tool / ✗ wrong_with_tool / ✗⊘ wrong_no_tool.
+// "Without_tool" is a separate marker because "answered correctly without
+// invoking any tool" (training-knowledge bypass — Gemma did this on Q1)
+// is disciplinarily different from "called the right tool and parsed the
+// result", even though both pass the regex.
+const OUTCOME_GLYPH: Record<RunResult['outcome'], string> = {
+  via_tool:        '✓',
+  without_tool:    '◷',
+  wrong_with_tool: '✗',
+  wrong_no_tool:   '✗⊘',
+};
+
+console.log(`\n${'═'.repeat(108)}\nSUMMARY\n${'═'.repeat(108)}`);
+console.log('Query        | Mode       | Rounds | Calls |    In |   Out |   Total |    Cost  | Outcome      | Answer');
+console.log('-------------|------------|-------:|------:|------:|------:|--------:|---------:|--------------|---------');
 for (const r of results) {
   for (const mode of ['composable', 'classic'] as const) {
     const x = r[mode];
     const total = x.inputTokens + x.outputTokens;
     const cost = x.costUSD === null ? '   n/a' : formatCost(x.costUSD).padStart(9);
+    const outcome = `${OUTCOME_GLYPH[x.outcome]} ${x.outcome}`.padEnd(13);
     console.log(
-      `${r.query.padEnd(12)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.inputTokens).padStart(5)} | ${String(x.outputTokens).padStart(5)} | ${String(total).padStart(7)} | ${cost} | ${x.correct ? '✓' : '✗'} | ${(x.finalAnswer || '').slice(0, 30)}`,
+      `${r.query.padEnd(12)} | ${mode.padEnd(10)} | ${String(x.rounds).padStart(6)} | ${String(x.toolCalls).padStart(5)} | ${String(x.inputTokens).padStart(5)} | ${String(x.outputTokens).padStart(5)} | ${String(total).padStart(7)} | ${cost} | ${outcome} | ${(x.finalAnswer || '').slice(0, 30)}`,
     );
   }
 }
+console.log(
+  `\nLegend: ✓ via_tool (correct, used a tool)   ◷ without_tool (correct, no tool used — discipline gap)   ` +
+  `✗ wrong_with_tool   ✗⊘ wrong_no_tool`,
+);
 
-interface ModeTotals { rounds: number; input: number; output: number; cost: number; ok: number; }
+interface ModeTotals {
+  rounds: number; input: number; output: number; cost: number;
+  via_tool: number; without_tool: number; wrong_with_tool: number; wrong_no_tool: number;
+}
+function emptyTotals(): ModeTotals {
+  return { rounds: 0, input: 0, output: 0, cost: 0,
+    via_tool: 0, without_tool: 0, wrong_with_tool: 0, wrong_no_tool: 0 };
+}
+function accumulate(acc: ModeTotals, r: RunResult): ModeTotals {
+  return {
+    rounds: acc.rounds + r.rounds,
+    input:  acc.input  + r.inputTokens,
+    output: acc.output + r.outputTokens,
+    cost:   acc.cost   + (r.costUSD ?? 0),
+    via_tool:        acc.via_tool        + (r.outcome === 'via_tool' ? 1 : 0),
+    without_tool:    acc.without_tool    + (r.outcome === 'without_tool' ? 1 : 0),
+    wrong_with_tool: acc.wrong_with_tool + (r.outcome === 'wrong_with_tool' ? 1 : 0),
+    wrong_no_tool:   acc.wrong_no_tool   + (r.outcome === 'wrong_no_tool' ? 1 : 0),
+  };
+}
 const totals = results.reduce<{ composable: ModeTotals; classic: ModeTotals }>(
   (acc, r) => ({
-    composable: {
-      rounds: acc.composable.rounds + r.composable.rounds,
-      input:  acc.composable.input  + r.composable.inputTokens,
-      output: acc.composable.output + r.composable.outputTokens,
-      cost:   acc.composable.cost   + (r.composable.costUSD ?? 0),
-      ok:     acc.composable.ok     + (r.composable.correct ? 1 : 0),
-    },
-    classic: {
-      rounds: acc.classic.rounds + r.classic.rounds,
-      input:  acc.classic.input  + r.classic.inputTokens,
-      output: acc.classic.output + r.classic.outputTokens,
-      cost:   acc.classic.cost   + (r.classic.costUSD ?? 0),
-      ok:     acc.classic.ok     + (r.classic.correct ? 1 : 0),
-    },
+    composable: accumulate(acc.composable, r.composable),
+    classic:    accumulate(acc.classic,    r.classic),
   }),
-  {
-    composable: { rounds: 0, input: 0, output: 0, cost: 0, ok: 0 },
-    classic:    { rounds: 0, input: 0, output: 0, cost: 0, ok: 0 },
-  },
+  { composable: emptyTotals(), classic: emptyTotals() },
 );
 
 console.log('\nTotals:');
@@ -147,8 +185,11 @@ for (const mode of ['composable', 'classic'] as const) {
   const t = totals[mode];
   const total = t.input + t.output;
   const cost = MODEL_PRICING ? formatCost(t.cost) : 'n/a';
+  const correctAny = t.via_tool + t.without_tool;
   console.log(
-    `  ${mode.padEnd(10)}  rounds=${t.rounds}  in=${t.input}  out=${t.output}  total=${total}  cost=${cost}  correct=${t.ok}/${results.length}`,
+    `  ${mode.padEnd(10)}  rounds=${t.rounds}  in=${t.input}  out=${t.output}  total=${total}  cost=${cost}  ` +
+    `correct=${correctAny}/${results.length} (via_tool=${t.via_tool}, without_tool=${t.without_tool})  ` +
+    `wrong=${t.wrong_with_tool + t.wrong_no_tool}`,
   );
 }
 
@@ -176,7 +217,8 @@ async function runComposable(q: Query): Promise<RunResult> {
     `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
     `Always use bash to act; never answer from training knowledge for live data. Be terse.\n` +
     `Tool observations include tools_referenced (output_schema, example, jq_paths) ` +
-    `and diagnostics. Read them to fix mistakes.`;
+    `and diagnostics. Read them to fix mistakes.\n` +
+    UNTRUSTED_OUTPUT_FRAGMENT;
 
   const messages: ChatMessage[] = [
     { role: 'system', content: appendFragments(baseSystem, promptFragments) },
@@ -198,7 +240,21 @@ async function runComposable(q: Query): Promise<RunResult> {
     const cmd = String(args['command'] ?? '');
     console.log(`  [composable] bash → ${cmd}`);
     const result = await bash.exec(cmd);
-    return makeObservation(cmd, result as { stdout: string; stderr: string; exitCode: number }, manifest);
+    const obs = makeObservation(cmd, result as { stdout: string; stderr: string; exitCode: number }, manifest);
+
+    // V5 strawman: if the pipeline ends in a registry tool, the stdout
+    // is untrusted skill output. Wrap it before it lands in the LLM
+    // context. Non-registry pipelines (pure jq/grep) skip wrapping —
+    // those produce data shaped by the agent itself.
+    const lastStage = lastPipelineStage(cmd);
+    const lastSlug = manifest.tools.find(
+      (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
+    )?.slug ?? null;
+    if (lastSlug && obs.stdout) {
+      const cap = outputCapForSkill(lastSlug, manifest.tools);
+      obs.stdout = wrapUntrustedOutput(obs.stdout, { slug: lastSlug, outputCap: cap });
+    }
+    return obs;
   });
 }
 
@@ -210,7 +266,8 @@ async function runClassic(q: Query): Promise<RunResult> {
 
   const baseSystem =
     `You have ${manifest.tools.length} tool(s). Call them as needed.\n` +
-    `Always use the tools to act; never answer from training knowledge for live data. Be terse.`;
+    `Always use the tools to act; never answer from training knowledge for live data. Be terse.\n` +
+    UNTRUSTED_OUTPUT_FRAGMENT;
 
   const messages: ChatMessage[] = [
     { role: 'system', content: appendFragments(baseSystem, promptFragments) },
@@ -224,12 +281,28 @@ async function runClassic(q: Query): Promise<RunResult> {
     const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
     console.log(`  [classic] ${tc.function.name} ${JSON.stringify(args)}`);
     const result = await bash.exec(cmd);
+    // Classic mode: every call lands directly on a registry skill, so the
+    // stdout is always untrusted output. Apply V5 wrapping unconditionally.
+    let stdout = (result.stdout ?? '').trim();
+    if (stdout) {
+      stdout = wrapUntrustedOutput(stdout, {
+        slug: tool.slug,
+        outputCap: tool.outputCap,
+      });
+    }
     return {
-      stdout: (result.stdout ?? '').trim(),
+      stdout,
       stderr: (result.stderr ?? '').trim(),
       exitCode: result.exitCode,
     };
   });
+}
+
+function classifyOutcome(correct: boolean, toolCalls: number): RunResult['outcome'] {
+  if (correct && toolCalls > 0) return 'via_tool';
+  if (correct) return 'without_tool';
+  if (toolCalls > 0) return 'wrong_with_tool';
+  return 'wrong_no_tool';
 }
 
 async function runLoop(
@@ -241,6 +314,7 @@ async function runLoop(
   let inputTokens = 0;
   let outputTokens = 0;
   let anyEstimated = false;
+  let toolCalls = 0;
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const raw = await callModel(messages, tools);
@@ -257,6 +331,7 @@ async function runLoop(
     });
 
     if (reply.tool_calls.length) {
+      toolCalls += reply.tool_calls.length;
       for (const tc of reply.tool_calls) {
         const obs = await execTool(tc);
         messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(obs) });
@@ -265,13 +340,16 @@ async function runLoop(
     }
 
     const finalAnswer = reply.content.trim();
+    const correct = q.expect.test(finalAnswer);
     return {
       rounds: round,
       inputTokens, outputTokens,
       costUSD: MODEL_PRICING ? computeCost(inputTokens, outputTokens, MODEL_PRICING) : null,
       anyEstimated,
       finalAnswer,
-      correct: q.expect.test(finalAnswer),
+      correct,
+      toolCalls,
+      outcome: classifyOutcome(correct, toolCalls),
     };
   }
   return {
@@ -281,6 +359,8 @@ async function runLoop(
     anyEstimated,
     finalAnswer: '(no convergence)',
     correct: false,
+    toolCalls,
+    outcome: classifyOutcome(false, toolCalls),
   };
 }
 

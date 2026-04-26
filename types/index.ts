@@ -67,6 +67,13 @@ export interface SkillDef {
    *  The loader verifies this before importing — protects against tampering
    *  with the dist branch / CDN caching of a hostile commit. */
   sha256?: string;
+  /** Maximum number of characters of stdout to forward back to the LLM.
+   *  Limits the blast radius of prompt-injection payloads in skill output
+   *  (THREAT-MODEL.md V5). Output beyond the cap is truncated with a marker
+   *  before delimiter-wrapping. Skill authors should pick a cap that fits
+   *  the legitimate output of their skill — url2md (markdown extraction) is
+   *  the natural injection vector and ships with a tight cap by default. */
+  outputCap?: number;
 }
 
 export interface Manifest {

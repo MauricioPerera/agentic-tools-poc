@@ -27,6 +27,7 @@ import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.ts';
 import { applyOverridesToManifest } from './skill-tuning.ts';
 import { inputToArgv, argvToShellCommand } from './arg-parser.ts';
+import { wrapUntrustedOutput } from './untrusted-output.ts';
 
 const REGISTRY = process.env.REGISTRY;
 const MODEL    = process.env.MODEL ?? '';
@@ -64,9 +65,17 @@ async function main(): Promise<void> {
     const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
     try {
       const result = await bash.exec(cmd);
+      // Classic mode: every call is a registry skill, so always wrap (V5).
+      let stdout = (result.stdout ?? '').trim();
+      if (stdout) {
+        stdout = wrapUntrustedOutput(stdout, {
+          slug: tool.slug,
+          outputCap: tool.outputCap,
+        });
+      }
       return {
         content: [
-          { type: 'text' as const, text: (result.stdout ?? '').trim() || '(no stdout)' },
+          { type: 'text' as const, text: stdout || '(no stdout)' },
           ...(result.stderr ? [{ type: 'text' as const, text: `stderr:\n${result.stderr.trim()}` }] : []),
         ],
         isError: result.exitCode !== 0,
