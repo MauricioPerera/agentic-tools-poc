@@ -1,0 +1,1 @@
+var p=async(t,r)=>{let e=String(t.text??"");return t.upper&&(e=e.toUpperCase()),t.lower&&(e=e.toLowerCase()),t.prefix&&(e=t.prefix+e),r.log(`echo-pretty: produced ${e.length} chars`),{text:e,length:e.length}},l=p;export{l as default};
