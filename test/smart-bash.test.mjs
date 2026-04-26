@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeObservation } from '../client/smart-bash.mjs';
+import { makeObservation, lastPipelineStage } from '../client/smart-bash.mjs';
 
 const MANIFEST = {
   tools: [
@@ -179,6 +179,52 @@ test('makeObservation: schema_check catches non-JSON stdout from registry tool',
   assert.equal(obs.schema_check.validated, false);
   assert.equal(obs.schema_check.ok, false);
 });
+
+// ---------------------------------------------------------------------------
+// lastPipelineStage — quote-aware tokenizer (Phase B improvement)
+
+test('lastPipelineStage: simple pipe', () => {
+  assert.equal(lastPipelineStage('cmd1 | cmd2'), 'cmd2');
+});
+
+test('lastPipelineStage: chain of three', () => {
+  assert.equal(lastPipelineStage('a | b | c'), 'c');
+});
+
+test('lastPipelineStage: || is logical OR, NOT a pipe', () => {
+  assert.equal(lastPipelineStage('cmd1 || cmd2'), 'cmd1 || cmd2');
+});
+
+test('lastPipelineStage: pipe inside double-quoted string is ignored', () => {
+  assert.equal(lastPipelineStage('echo "a|b" | jq'), 'jq');
+});
+
+test('lastPipelineStage: pipe inside single-quoted string is ignored', () => {
+  assert.equal(lastPipelineStage("echo 'a|b' | jq -r '.x'"), "jq -r '.x'");
+});
+
+test('lastPipelineStage: escaped pipe is not a separator', () => {
+  assert.equal(lastPipelineStage('cmd1 \\| literal | cmd2'), 'cmd2');
+});
+
+test('lastPipelineStage: trailing pipe yields empty last stage filtered out', () => {
+  assert.equal(lastPipelineStage('cmd1 |'), 'cmd1');
+});
+
+test('lastPipelineStage: empty input returns null', () => {
+  assert.equal(lastPipelineStage(''), null);
+});
+
+test('lastPipelineStage: jq filter with quoted pipe-like content', () => {
+  // Real jq: `jq 'select(.x == "a|b")'` — the pipe inside the string is data
+  assert.equal(
+    lastPipelineStage(`ip-info | jq 'select(.x == "a|b")'`),
+    `jq 'select(.x == "a|b")'`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Tool detection — quote-aware (Phase B improvement)
 
 test('makeObservation: schema_check reports type mismatch errors', () => {
   const obs = makeObservation(

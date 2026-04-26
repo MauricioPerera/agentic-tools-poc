@@ -29,6 +29,7 @@ import {
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
 import { applyOverridesToManifest } from './skill-tuning.mjs';
+import { inputToArgv, argvToShellCommand } from './arg-parser.mjs';
 
 const REGISTRY = process.env.REGISTRY;
 const MODEL    = process.env.MODEL ?? '';
@@ -62,7 +63,7 @@ async function main() {
     // Reuses the exact same execution path as the composable server, so
     // any difference in agent behaviour is purely about tool surface, not
     // about runtime semantics.
-    const cmd = [tool.slug, ...argvFromInput(args)].join(' ');
+    const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
     try {
       const result = await bash.exec(cmd);
       return {
@@ -83,16 +84,6 @@ async function main() {
     `[agentic-tools-classic mcp] ready — ${manifest.tools.length} skill(s) exposed individually` +
     (MODEL ? ` (MODEL=${MODEL}, tuned: ${tunedTools.length ? tunedTools.join(',') : 'none'})` : '') + '\n'
   );
-}
-
-function argvFromInput(args) {
-  const out = [];
-  for (const [k, v] of Object.entries(args)) {
-    if (v === false || v == null) continue;
-    if (v === true) out.push(`--${k}`);
-    else out.push(`--${k}`, JSON.stringify(String(v)));
-  }
-  return out;
 }
 
 function errorResult(msg) {

@@ -14,7 +14,8 @@ import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
 import { makeObservation } from './smart-bash.mjs';
 import { normalizeReply, tokensUsed } from './model-adapter.mjs';
-import { applyOverridesToManifest } from './skill-tuning.mjs';
+import { applyOverridesToManifest, getSystemPromptFragments } from './skill-tuning.mjs';
+import { parseToolCallArguments, inputToArgv, argvToShellCommand } from './arg-parser.mjs';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
@@ -44,12 +45,17 @@ const QUERIES = [
 const { manifest: rawManifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
 // The skill catalog adapts to the model. Same source, different shape.
 const manifest = applyOverridesToManifest(rawManifest, MODEL);
+const promptFragments = getSystemPromptFragments(rawManifest, MODEL);
 const bash = new Bash({ customCommands: commands });
 
 // Detect whether we're running with model-tuned skills (for header banner)
 const tuned = JSON.stringify(manifest) !== JSON.stringify(rawManifest);
 console.log(`Model: ${MODEL}`);
-console.log(`Skill tuning: ${tuned ? 'ON (model-specific overrides applied)' : 'OFF (default skill shape)'}\n`);
+console.log(`Skill tuning: ${tuned ? 'ON (model-specific overrides applied)' : 'OFF (default skill shape)'}`);
+if (promptFragments.length) {
+  console.log(`Prompt fragments: ${promptFragments.length} model-specific instruction(s) injected`);
+}
+console.log();
 
 const results = [];
 for (const q of QUERIES) {
@@ -90,15 +96,16 @@ async function runComposable(q) {
     `- ${t.slug}: ${t.summary}. Output schema: ${JSON.stringify(t.outputSchema ?? {})}`
   ).join('\n');
 
+  const baseSystem =
+    `You have a single tool: \`bash\`. Compose registry commands with unix pipes.\n\n` +
+    `Available registry commands inside bash:\n${toolList}\n\n` +
+    `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
+    `Always use bash to act; never answer from training knowledge for live data. Be terse.\n` +
+    `Tool observations include tools_referenced (output_schema, example, jq_paths) ` +
+    `and diagnostics. Read them to fix mistakes.`;
+
   const messages = [
-    { role: 'system', content:
-      `You have a single tool: \`bash\`. Compose registry commands with unix pipes.\n\n` +
-      `Available registry commands inside bash:\n${toolList}\n\n` +
-      `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
-      `Always use bash to act; never answer from training knowledge for live data. Be terse.\n` +
-      `Tool observations include tools_referenced (output_schema, example, jq_paths) ` +
-      `and diagnostics. Read them to fix mistakes.`
-    },
+    { role: 'system', content: appendFragments(baseSystem, promptFragments) },
     { role: 'user', content: q.text },
   ];
   const tools = [{ type: 'function', function: {
@@ -108,7 +115,7 @@ async function runComposable(q) {
   }}];
 
   return runLoop(messages, tools, q, async (tc) => {
-    const args = parseArgs(tc.function.arguments);
+    const args = parseToolCallArguments(tc.function.arguments);
     const cmd = String(args.command ?? '');
     console.log(`  [composable] bash → ${cmd}`);
     const result = await bash.exec(cmd);
@@ -126,19 +133,20 @@ async function runClassic(q) {
     },
   }));
 
+  const baseSystem =
+    `You have ${manifest.tools.length} tool(s). Call them as needed.\n` +
+    `Always use the tools to act; never answer from training knowledge for live data. Be terse.`;
+
   const messages = [
-    { role: 'system', content:
-      `You have ${manifest.tools.length} tool(s). Call them as needed.\n` +
-      `Always use the tools to act; never answer from training knowledge for live data. Be terse.`
-    },
+    { role: 'system', content: appendFragments(baseSystem, promptFragments) },
     { role: 'user', content: q.text },
   ];
 
   return runLoop(messages, toolDefs, q, async (tc) => {
     const tool = manifest.tools.find(t => t.slug === tc.function.name);
     if (!tool) return { error: `unknown tool: ${tc.function.name}` };
-    const args = parseArgs(tc.function.arguments);
-    const cmd = [tool.slug, ...argvFromInput(args)].join(' ');
+    const args = parseToolCallArguments(tc.function.arguments);
+    const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
     console.log(`  [classic] ${tc.function.name} ${JSON.stringify(args)}`);
     const result = await bash.exec(cmd);
     return { stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), exitCode: result.exitCode };
@@ -187,22 +195,10 @@ async function callModel(messages, tools) {
   return env.result;
 }
 
-function parseArgs(raw) {
-  if (raw == null) return {};
-  if (typeof raw !== 'string') return raw;
-  try {
-    const once = JSON.parse(raw);
-    if (typeof once === 'string') return JSON.parse(once);
-    return once;
-  } catch { return {}; }
-}
+// parseToolCallArguments and inputToArgv live in ./arg-parser.mjs.
 
-function argvFromInput(args) {
-  const out = [];
-  for (const [k, v] of Object.entries(args)) {
-    if (v === false || v == null) continue;
-    if (v === true) out.push(`--${k}`);
-    else out.push(`--${k}`, JSON.stringify(String(v)));
-  }
-  return out;
+/** Append per-model prompt fragments to a base system prompt, if any. */
+function appendFragments(base, fragments) {
+  if (!fragments?.length) return base;
+  return `${base}\n\nMODEL-SPECIFIC INSTRUCTIONS:\n${fragments.map((f) => '- ' + f).join('\n')}`;
 }

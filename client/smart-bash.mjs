@@ -20,8 +20,33 @@
  * carry signal. A clean exec returns the same minimal JSON as before.
  */
 
-const REGISTRY_TOOL_TOKEN = (slug) => new RegExp(`(^|[\\s|;&(])${escapeRegex(slug)}(\\s|$|[|;&)])`);
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/**
+ * Detect a registry tool by name in a bash command, **outside of quoted strings
+ * and shell variable expansions**. The earlier regex matched `"ip-info"` literal
+ * tokens too; this version walks the command character by character, tracking
+ * single/double-quote state, before testing the tool token.
+ */
+function commandReferencesTool(command, slug) {
+  const re = new RegExp(`(^|[\\s|;&(])${escapeRegex(slug)}(\\s|$|[|;&)])`);
+  const cleaned = stripQuotedRegions(command);
+  return re.test(cleaned);
+}
+
+/** Replace contents of single- and double-quoted regions with spaces of equal length. */
+function stripQuotedRegions(s) {
+  let out = '';
+  let inSingle = false, inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    const prev = s[i - 1];
+    if (c === "'" && prev !== '\\' && !inDouble)  { inSingle = !inSingle; out += c; continue; }
+    if (c === '"' && prev !== '\\' && !inSingle)  { inDouble = !inDouble; out += c; continue; }
+    out += (inSingle || inDouble) ? ' ' : c;
+  }
+  return out;
+}
 
 export function makeObservation(command, result, manifest) {
   const stdout = (result.stdout ?? '').replace(/\n+$/, '');
@@ -30,8 +55,9 @@ export function makeObservation(command, result, manifest) {
 
   const obs = { exitCode, stdout, stderr };
 
-  // 1. Identify registry tools in the pipeline (cheap regex, good enough)
-  const tools = manifest.tools.filter((t) => REGISTRY_TOOL_TOKEN(t.slug).test(command));
+  // 1. Identify registry tools referenced in the command, ignoring tool names
+  //    that only appear inside quoted strings (e.g. `echo "ip-info is a tool"`).
+  const tools = manifest.tools.filter((t) => commandReferencesTool(command, t.slug));
   if (tools.length) {
     obs.tools_referenced = tools.map((t) => ({
       slug: t.slug,
@@ -116,8 +142,35 @@ export function makeObservation(command, result, manifest) {
 // ---------------------------------------------------------------------------
 // helpers
 
-function lastPipelineStage(cmd) {
-  const stages = cmd.split('|').map((s) => s.trim()).filter(Boolean);
+/**
+ * Return the last command in a bash pipeline, splitting only on **unquoted,
+ * unescaped single pipes**. Treats `||` as a logical OR (not a pipe), and
+ * leaves `|` characters inside `'..'` / `".."` and after `\` untouched.
+ *
+ * Not a full bash parser — but covers the cases we've actually hit when small
+ * models compose pipelines (`echo "a|b" | jq`, `cmd1 || cmd2`, `cmd \| cmd`).
+ */
+export function lastPipelineStage(cmd) {
+  const stages = [];
+  let current = '';
+  let inSingle = false, inDouble = false;
+
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    const next = cmd[i + 1];
+
+    if (c === '\\' && next === '|') { current += c + next; i++; continue; }
+    if (c === "'" && !inDouble)     { inSingle = !inSingle; current += c; continue; }
+    if (c === '"' && !inSingle)     { inDouble = !inDouble; current += c; continue; }
+    if (c === '|' && !inSingle && !inDouble) {
+      if (next === '|') { current += c + next; i++; continue; }   // ||
+      stages.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += c;
+  }
+  if (current.trim()) stages.push(current.trim());
   return stages[stages.length - 1] ?? null;
 }
 

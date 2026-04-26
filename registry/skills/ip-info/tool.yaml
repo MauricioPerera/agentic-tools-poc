@@ -35,3 +35,8 @@ model_overrides:
     inputSchema:
       type: object
       properties: {}
+    # Aggregated across all skills into a "MODEL-SPECIFIC INSTRUCTIONS"
+    # section appended to the agent's system prompt by skill-tuning.mjs.
+    system_prompt_fragments:
+      - "Never invent IP addresses or country codes — always call ip-info."
+      - "If a tool fails, retry with different arguments. Never apologize and quit."
