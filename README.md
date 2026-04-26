@@ -9,4 +9,4 @@ Distributed publicly via jsDelivr:
 - Manifest: `https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/manifest.json`
 - Skills:   `https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@dist/skills/<slug>.mjs`
 
-Last build: 742b857 on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+Last build: 0ca1c25 on $(date -u +%Y-%m-%dT%H:%M:%SZ)
