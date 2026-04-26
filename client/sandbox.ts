@@ -148,12 +148,26 @@ export interface SandboxError {
  * return DEFAULT })()` so the sandbox can `evalCode` it and get a promise of
  * the handler back.
  *
- * Cached by source-hash because parsing is the dominant cost.
+ * Cached because the regex pipeline + GC churn is the dominant cost on the
+ * warm path. The cache is bounded LRU-style: a long-lived process loading
+ * many distinct bundles (multi-tenant agent, registry switcher) would
+ * otherwise grow this map without bound. 64 entries fits the canonical
+ * registry × 8 versions worth of churn comfortably and caps the worst case
+ * at a few hundred KB of strings retained.
+ *
+ * The map exploits insertion-order iteration: `set` after `delete` moves the
+ * key to the most-recently-used position, and the oldest key is `keys().next()`.
  */
+const COMPILED_CACHE_MAX = 64;
 const compiledCache = new Map<string, string>();
 export function compileHandler(bundleSource: string): string {
   const cached = compiledCache.get(bundleSource);
-  if (cached) return cached;
+  if (cached !== undefined) {
+    // Touch: move to MRU position so the oldest key really is the LRU.
+    compiledCache.delete(bundleSource);
+    compiledCache.set(bundleSource, cached);
+    return cached;
+  }
 
   // esbuild bundles use ESM `export default`. QuickJS in script mode does
   // not understand `export`, so we strip the keyword and capture the default
@@ -186,8 +200,20 @@ export function compileHandler(bundleSource: string): string {
 
   const wrapped =
     `(function(){\n${body}\n;return globalThis.__defaultExport;})()`;
+
+  // Evict the oldest entry if we're at capacity, then insert at MRU.
+  if (compiledCache.size >= COMPILED_CACHE_MAX) {
+    const oldest = compiledCache.keys().next().value;
+    if (oldest !== undefined) compiledCache.delete(oldest);
+  }
   compiledCache.set(bundleSource, wrapped);
   return wrapped;
+}
+
+// Test-only: clear the compile cache (used by snapshot tests that vary the
+// input across runs, and for benchmarks that want clean state).
+export function _clearCompiledCache(): void {
+  compiledCache.clear();
 }
 
 /**
@@ -208,11 +234,30 @@ export async function runHandlerSandboxed<T = unknown>(
   const disposables: QuickJSHandle[] = [];
   const timeoutMs = opts.timeoutMs ?? 5000;
   const deadline = Date.now() + timeoutMs;
+  const isPastDeadline = (): boolean => Date.now() > deadline;
+  const timeoutResult = (): SandboxError => ({
+    ok: false,
+    error: `handler timed out after ${timeoutMs}ms`,
+    isViolation: true,
+  });
 
-  // Interrupt handler — fires periodically while VM code runs. Returning
-  // truthy throws InternalError inside the VM, breaking out of any loop
-  // (including `while(true){}` which executePendingJobs cannot preempt).
-  vm.runtime.setInterruptHandler(() => Date.now() > deadline);
+  // Three layers of deadline enforcement, each covering a different stall
+  // mode — they look redundant but cover disjoint cases:
+  //
+  //   1. Interrupt handler (here, below): fires periodically while the VM is
+  //      executing JS bytecode. Catches tight CPU loops like `while(true){}`
+  //      that executePendingJobs cannot preempt.
+  //   2. Promise.race against evalCodeAsync (further down): catches stalls
+  //      where the VM has yielded to an asyncified host fn (e.g. fetch) that
+  //      never resolves. The interrupt handler is useless here — no VM
+  //      bytecode is running, so it never fires.
+  //   3. pollUntilSettled's own deadline (helper): catches stalls during the
+  //      promise-polling phase, after evalCodeAsync returned. Same logic as
+  //      (2) but for the next stage.
+  //
+  // The shared `deadline` variable means all three trip at the same wall
+  // time, regardless of which one observes it first.
+  vm.runtime.setInterruptHandler(isPastDeadline);
 
   try {
     // ─── Bridge: __hostFetch ──────────────────────────────────────────────
@@ -298,34 +343,34 @@ globalThis.ctx = {
 })()
 `;
 
+    // Layer 2: race the eval against the deadline (see the multi-line note
+    // at the top of the function). Catches the case where evalCodeAsync
+    // suspends in an asyncified host fn that never resolves.
     const evalResult = await Promise.race([
       vm.evalCodeAsync(driver),
       timeoutPromise(timeoutMs),
     ]);
-    if (evalResult === '__sandbox_timeout__') {
-      return { ok: false, error: `handler timed out after ${timeoutMs}ms`, isViolation: true };
-    }
+    if (evalResult === '__sandbox_timeout__') return timeoutResult();
     if (evalResult.error) {
       const err = vm.dump(evalResult.error);
       evalResult.error.dispose();
-      return classifyError(err, deadline, timeoutMs);
+      return errorOrTimeout(err, isPastDeadline, timeoutResult);
     }
     const promiseH = evalResult.value;
     disposables.push(promiseH);
 
-    // We poll getPromiseState rather than vm.resolvePromise — the latter
-    // hangs in this version of quickjs-emscripten when the asyncified
-    // runtime's promise was created inside an async host fn return path.
-    // executePendingJobs pumps any microtasks that landed since our last
-    // check; getPromiseState returns the fulfilled/rejected/pending status.
-    const settled = await pollUntilSettled(vm, promiseH, timeoutMs);
-    if (settled.kind === 'timeout') {
-      return { ok: false, error: `handler timed out after ${timeoutMs}ms`, isViolation: true };
-    }
+    // Layer 3: drive the promise to settlement. We poll getPromiseState
+    // rather than vm.resolvePromise — the latter hangs in this version of
+    // quickjs-emscripten when the asyncified runtime's promise was created
+    // inside an async host fn return path. executePendingJobs pumps any
+    // microtasks that landed since our last check; getPromiseState returns
+    // the fulfilled/rejected/pending status.
+    const settled = await pollUntilSettled(vm, promiseH, deadline);
+    if (settled.kind === 'timeout') return timeoutResult();
     if (settled.kind === 'rejected') {
       const err = vm.dump(settled.handle);
       settled.handle.dispose();
-      return classifyError(err, deadline, timeoutMs);
+      return errorOrTimeout(err, isPastDeadline, timeoutResult);
     }
     const value = vm.dump(settled.handle) as T;
     settled.handle.dispose();
@@ -365,18 +410,20 @@ type SettledOutcome =
 async function pollUntilSettled(
   vm: QuickJSAsyncContext,
   promiseH: QuickJSHandle,
-  timeoutMs: number,
+  deadline: number,
 ): Promise<SettledOutcome> {
-  const deadline = Date.now() + timeoutMs;
+  // Check state FIRST: if the promise was already settled when we arrived
+  // (sync handler), we can return without pumping the job queue at all.
   // Tight initial loop; back off as time goes on so a long-running fetch
   // doesn't burn CPU but a fast handler still settles in <1ms total wall.
   let backoffMs = 0;
   while (Date.now() < deadline) {
-    vm.runtime.executePendingJobs();
     const state = vm.getPromiseState(promiseH);
     if (state.type === 'fulfilled') return { kind: 'fulfilled', handle: state.value };
     if (state.type === 'rejected')  return { kind: 'rejected',  handle: state.error };
-    // pending — yield to the host event loop so async host fns (fetch) advance.
+    // pending — pump the job queue, then yield to the host event loop so
+    // async host fns (fetch) advance.
+    vm.runtime.executePendingJobs();
     await new Promise((r) => setTimeout(r, backoffMs));
     if (backoffMs < 16) backoffMs = backoffMs === 0 ? 1 : Math.min(backoffMs * 2, 16);
   }
@@ -393,19 +440,21 @@ function stringifyError(e: unknown): string {
 }
 
 /**
- * QuickJS reports interrupt-handler aborts as InternalError("interrupted").
- * Promote those to the timeout/violation classification — semantically they
- * are the deadline firing, not a handler-thrown error.
+ * Distinguish a real handler error from a deadline-fired interrupt. QuickJS
+ * reports interrupt-handler aborts as InternalError("interrupted"); we also
+ * treat anything that surfaces past the deadline as a timeout, since the
+ * VM's error message can lag the actual cause.
+ *
+ * Returning `timeoutResult()` keeps the timeout message identical across all
+ * three deadline-enforcement layers.
  */
-function classifyError(err: unknown, deadline: number, timeoutMs: number): SandboxError {
+function errorOrTimeout(
+  err: unknown,
+  isPastDeadline: () => boolean,
+  timeoutResult: () => SandboxError,
+): SandboxError {
   const msg = stringifyError(err);
-  if (/interrupted/i.test(msg) || Date.now() > deadline) {
-    return {
-      ok: false,
-      error: `handler timed out after ${timeoutMs}ms (interrupt)`,
-      isViolation: true,
-    };
-  }
+  if (/interrupted/i.test(msg) || isPastDeadline()) return timeoutResult();
   return { ok: false, error: msg, isViolation: false };
 }
 
