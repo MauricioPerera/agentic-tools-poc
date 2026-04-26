@@ -63,6 +63,10 @@ export interface SkillDef {
   model_overrides?: Record<string, ModelOverride>;
   /** Path within the manifest base URL where the bundled .mjs lives. */
   source: string;
+  /** SHA-256 hex digest of the bundle contents at manifest-build time.
+   *  The loader verifies this before importing — protects against tampering
+   *  with the dist branch / CDN caching of a hostile commit. */
+  sha256?: string;
 }
 
 export interface Manifest {

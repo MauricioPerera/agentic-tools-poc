@@ -15,7 +15,9 @@ subprocesses. Zero runtime dependencies beyond `just-bash`,
 The premise: **agent capabilities are skills, not tools**. Skills are owned
 by the agent's author and carry not just the function but its context,
 per-model tuning, recovery patterns, and meta-knowledge. See
-[PHILOSOPHY.md](./PHILOSOPHY.md) for the full reasoning.
+[PHILOSOPHY.md](./PHILOSOPHY.md) for the full reasoning and
+[THREAT-MODEL.md](./THREAT-MODEL.md) for the security posture (Phase 1
+trusts skill authors; Phase 2 ships QuickJS sandboxing).
 
 The agent talks to its skills through a regular bash shell, so they compose
 with `jq`, `grep`, pipes and all the unix vocabulary it already knows.

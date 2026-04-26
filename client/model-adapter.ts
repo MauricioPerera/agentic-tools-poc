@@ -18,9 +18,10 @@
  */
 import type { ChatMessage, NormalizedReply, ToolCall, UsageStats } from '../types/index.ts';
 
-const HERMES_RE = /hermes/i;
+const HERMES_RE = /hermes|llama-3\.1.*instruct/i;
+const QWEN_RE   = /qwen.*coder/i;
 
-/** Shape of an OpenAI-style raw reply (Granite, Gemma, etc.). */
+/** OpenAI-style reply (Granite, Gemma, OpenAI, Anthropic via compat layer). */
 interface OpenAIStyleReply {
   choices?: Array<{
     finish_reason?: string;
@@ -32,19 +33,63 @@ interface OpenAIStyleReply {
   usage?: UsageStats;
 }
 
-/** Shape of the legacy Workers AI reply (Hermes). */
+/** Legacy Workers AI reply (Hermes 2 Pro, Llama 3.1 8B fp8). */
 interface HermesStyleReply {
   response?: string | null;
   tool_calls?: Array<{
     name: string;
-    arguments: unknown; // Hermes returns this as a parsed object
+    arguments: unknown; // typically a parsed object
   }>;
   usage?: UsageStats;
 }
 
-type RawReply = OpenAIStyleReply | HermesStyleReply;
+/**
+ * Qwen 2.5 Coder reply. Notable quirk: when the model wants to call a tool,
+ * `response` is an OBJECT `{ name, arguments }` rather than a string. The
+ * top-level `tool_calls[]` is empty in that case. When the model gives a
+ * final answer, `response` is a string and `tool_calls[]` is also empty.
+ */
+interface QwenStyleReply {
+  response?: string | { name: string; arguments: unknown } | null;
+  tool_calls?: ToolCall[];
+  usage?: UsageStats;
+}
+
+type RawReply = OpenAIStyleReply | HermesStyleReply | QwenStyleReply;
 
 export function normalizeReply(raw: RawReply, model: string): NormalizedReply {
+  if (QWEN_RE.test(model)) {
+    const r = raw as QwenStyleReply;
+    if (r.response && typeof r.response === 'object' && 'name' in r.response) {
+      // Tool call shape — synthesize a single ToolCall in the OpenAI format
+      const tc: ToolCall = {
+        id: `qwen-${Date.now()}-0`,
+        type: 'function',
+        function: {
+          name: r.response.name,
+          arguments: typeof r.response.arguments === 'string'
+            ? r.response.arguments
+            : JSON.stringify(r.response.arguments ?? {}),
+        },
+      };
+      return {
+        content: '',
+        tool_calls: [tc],
+        finish_reason: 'tool_calls',
+        usage: r.usage ?? null,
+        reportedTokens: r.usage?.total_tokens ?? 0,
+      };
+    }
+    // Final answer shape — plain string response
+    return {
+      content: typeof r.response === 'string' ? r.response : '',
+      tool_calls: [],
+      finish_reason: 'stop',
+      usage: r.usage ?? null,
+      reportedTokens: r.usage?.total_tokens ?? 0,
+    };
+  }
+
   if (HERMES_RE.test(model)) {
     const r = raw as HermesStyleReply;
     const tcs: ToolCall[] = (r.tool_calls ?? []).map((tc, i) => ({
@@ -62,11 +107,11 @@ export function normalizeReply(raw: RawReply, model: string): NormalizedReply {
       tool_calls: tcs,
       finish_reason: tcs.length ? 'tool_calls' : 'stop',
       usage: r.usage ?? null,
-      reportedTokens: 0, // Hermes returns zeros — caller should estimate
+      reportedTokens: r.usage?.total_tokens ?? 0, // Hermes beta returns 0 here
     };
   }
 
-  // Granite / OpenAI-style
+  // Granite / Gemma / OpenAI-style
   const r = raw as OpenAIStyleReply;
   const choice = r.choices?.[0] ?? {};
   const msg = choice.message ?? {};

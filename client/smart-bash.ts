@@ -163,6 +163,19 @@ export function makeObservation(
     );
   }
 
+  // Fallback: command failed but no specific pattern matched. Tell the model
+  // what diagnostics WOULD have helped, so it knows the catalog of things we
+  // know how to spot, instead of guessing what we know.
+  if (diag.length === 0 && exitCode !== 0 && stderr) {
+    diag.push(
+      `Command failed with exitCode ${exitCode} but no specific diagnostic pattern matched ` +
+        `the error. Smart-bash watches for: jq path errors, command-not-found, jq compile/parse ` +
+        `errors, and malformed stdout. If your error doesn't fit those, debug by running each ` +
+        `pipeline stage in isolation. Available registry commands: ` +
+        `${manifest.tools.map((t) => t.slug).join(', ')}.`,
+    );
+  }
+
   if (diag.length) obs.diagnostics = diag;
   return obs;
 }

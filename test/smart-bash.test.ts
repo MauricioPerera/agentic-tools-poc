@@ -282,6 +282,61 @@ test('makeObservation: schema_check fails when output omits a required field', (
   );
 });
 
+// ---------------------------------------------------------------------------
+// Fallback diagnostic — fires when no specific pattern matches a real error
+
+test('makeObservation: fallback diagnostic fires for unknown stderr pattern', () => {
+  const obs = makeObservation(
+    `ip-info`,
+    {
+      stdout: '',
+      stderr: 'Some weird upstream error format we have not seen before',
+      exitCode: 42,
+    },
+    MANIFEST,
+  );
+  assert.ok(obs.diagnostics, 'expected a fallback diagnostic');
+  assert.match(obs.diagnostics[0]!, /no specific diagnostic pattern matched/i);
+  // Should enumerate available commands so the model knows what's there
+  assert.match(obs.diagnostics[0]!, /ip-info/);
+});
+
+test('makeObservation: fallback does NOT fire when a specific diagnostic matched', () => {
+  const obs = makeObservation(
+    `ip-info | jq -r '.ip.country'`,
+    {
+      stdout: '',
+      stderr: 'jq: parse error: Cannot index string with string "country"',
+      exitCode: 5,
+    },
+    MANIFEST,
+  );
+  assert.ok(obs.diagnostics);
+  // The jq-specific diagnostic should be the only one
+  assert.equal(obs.diagnostics.length, 1);
+  assert.match(obs.diagnostics[0]!, /flat object/);
+});
+
+test('makeObservation: fallback does NOT fire when exit code is 0', () => {
+  const obs = makeObservation(
+    `echo hello`,
+    { stdout: 'hello', stderr: 'warning: deprecated', exitCode: 0 },
+    MANIFEST,
+  );
+  // No diagnostic at all when nothing failed
+  assert.equal(obs.diagnostics, undefined);
+});
+
+test('makeObservation: fallback does NOT fire when stderr is empty', () => {
+  const obs = makeObservation(
+    `some-command`,
+    { stdout: '', stderr: '', exitCode: 1 },
+    MANIFEST,
+  );
+  // stderr empty = no useful signal to give the model anyway
+  assert.equal(obs.diagnostics, undefined);
+});
+
 test('makeObservation: schema_check passes when output has all required fields', () => {
   const requiredManifest = {
     tools: [

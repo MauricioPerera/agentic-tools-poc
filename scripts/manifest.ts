@@ -5,6 +5,7 @@
  * relative path so the same manifest works under jsDelivr, Pages, R2, etc.
  */
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
@@ -27,10 +28,15 @@ const tools: SkillDef[] = [];
 for (const slug of readdirSync(SKILLS_DIR)) {
   const meta = parseYaml(readFileSync(join(SKILLS_DIR, slug, 'tool.yaml'), 'utf8')) as Partial<SkillDef>;
   const bundle = `skills/${slug}.mjs`;
-  if (!existsSync(join(DIST, bundle))) {
+  const bundlePath = join(DIST, bundle);
+  if (!existsSync(bundlePath)) {
     console.error(`! ${slug}: missing ${bundle} — run \`npm run build\` first`);
     process.exit(1);
   }
+  // Compute sha256 of the bundle so the loader can verify integrity before
+  // importing. Catches tampering with dist branch, hostile commits that
+  // jsDelivr cached, or accidental corruption mid-flight.
+  const sha256 = createHash('sha256').update(readFileSync(bundlePath)).digest('hex');
   tools.push({
     slug:            meta.slug!,
     name:            meta.name!,
@@ -44,6 +50,7 @@ for (const slug of readdirSync(SKILLS_DIR)) {
     networkPolicy:   meta.networkPolicy ?? { allow: [] },
     model_overrides: meta.model_overrides ?? {},
     source:          bundle,
+    sha256,
   });
 }
 

@@ -8,6 +8,7 @@
  */
 import { defineCommand } from 'just-bash';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgvAgainstSchema, coerceArgvValue } from './arg-parser.ts';
 import type {
@@ -83,6 +84,20 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
 
         if (!handlerCache.has(tool.slug)) {
           const code = await readResource(`${base}/${tool.source}`);
+          // Integrity check: when the manifest declares a sha256, refuse to
+          // import a bundle whose contents don't match. Defends against:
+          //   - hostile commits to the dist branch / forks
+          //   - jsDelivr cache poisoning of an old hash
+          //   - accidental truncation / corruption in transit
+          if (tool.sha256) {
+            const actual = createHash('sha256').update(code, 'utf8').digest('hex');
+            if (actual !== tool.sha256) {
+              throw new Error(
+                `bundle integrity check failed: ${tool.source} has sha256 ${actual.slice(0, 16)}… ` +
+                `but manifest expected ${tool.sha256.slice(0, 16)}…. Refusing to load.`,
+              );
+            }
+          }
           const dataUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
           const mod = (await import(dataUrl)) as { default: SkillHandler };
           handlerCache.set(tool.slug, mod.default);
