@@ -44,48 +44,46 @@ async function main(): Promise<void> {
   const { manifest, commands } = await loadRegistry({ registry: REGISTRY });
   const bash = new Bash({ customCommands: commands as never });
 
-  const toolList = manifest.tools
-    .map((t) => `  • ${t.slug} — ${t.summary}${t.networkPolicy?.allow?.length ? ' [net: ' + t.networkPolicy.allow.join(',') + ']' : ''}`)
-    .join('\n');
-
   const server = new Server(
     { name: 'agentic-tools', version: '0.1.0' },
     { capabilities: { tools: {} } },
   );
 
+  // Composable mode: the model sees ONE tool (`bash`). The catalog is NOT
+  // enumerated in the system prompt — the model discovers what skills exist
+  // by running `bash list_skills` (optionally filtered by --capability or
+  // --search), and reads any specific skill's contract via
+  // `bash tool_schema --slug <name>`. This is what makes the architecture
+  // O(catalog-subset) instead of O(catalog-total) on the prompt: the model
+  // only carries forward the schemas it actually needs.
+  //
+  // Without this, "discovery" is theatre — the model already has the full
+  // list in the system prompt and `tool_schema` just confirms what it
+  // already knows. The whole point is that `list_skills --capability X`
+  // lets the model load a SUBSET, not the full registry.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: 'bash',
         description:
-          `Execute a bash command in a sandboxed environment with the following ` +
-          `registry tools available as commands (in addition to standard unix ` +
-          `commands like jq, grep, sed, awk, head, xargs, etc):\n\n${toolList}\n\n` +
-          `Compose tools using pipes for token efficiency: only the final ` +
-          `pipeline output is returned. Use \`tool_schema --slug <name>\` to ` +
-          `introspect any registry tool's input/output JSONSchema.\n\n` +
-          `Tool flags follow --key value or --key=value form. Boolean flags can ` +
-          `be passed bare (--upper) or as --upper=true.\n\n` +
+          `Execute a bash command in a sandboxed environment.\n\n` +
+          `Discover available skills by running:\n` +
+          `  bash list_skills                          → all skills (one slug + summary per line)\n` +
+          `  bash list_skills --capability <tag>       → filter by capability tag (e.g. network, lookup, transform)\n` +
+          `  bash list_skills --search <query>         → fuzzy search across slug, summary, capabilities\n` +
+          `  bash list_skills --json                   → full metadata as JSON\n\n` +
+          `Inspect a specific skill's contract before using it:\n` +
+          `  bash tool_schema --slug <name>            → returns the full JSONSchema for input/output\n\n` +
+          `Standard unix tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n\n` +
+          `Compose tools with pipes for token efficiency — only the final pipeline output ` +
+          `crosses back to you. Tool flags follow --key value or --key=value form; boolean ` +
+          `flags can be passed bare (--upper) or as --upper=true.\n\n` +
           UNTRUSTED_OUTPUT_FRAGMENT,
         inputSchema: {
           type: 'object',
           required: ['command'],
           properties: {
             command: { type: 'string', description: 'The bash command line to execute.' },
-          },
-        },
-      },
-      {
-        name: 'tool_schema',
-        description:
-          `Returns the JSONSchema for a registry tool's input and output, plus ` +
-          `its capabilities, sideEffects, and networkPolicy. Call this before ` +
-          `using a tool you have not used before.`,
-        inputSchema: {
-          type: 'object',
-          required: ['slug'],
-          properties: {
-            slug: { type: 'string', description: 'The tool slug (e.g. "echo-pretty").' },
           },
         },
       },
@@ -130,24 +128,10 @@ async function main(): Promise<void> {
       }
     }
 
-    if (name === 'tool_schema') {
-      const slug = String(args['slug'] ?? '');
-      const tool = manifest.tools.find((t) => t.slug === slug);
-      if (!tool) return errorResult(`unknown tool: ${slug}`);
-      const view = {
-        slug:          tool.slug,
-        name:          tool.name,
-        summary:       tool.summary,
-        version:       tool.version,
-        capabilities:  tool.capabilities,
-        sideEffects:   tool.sideEffects,
-        inputSchema:   tool.inputSchema,
-        outputSchema:  tool.outputSchema,
-        networkPolicy: tool.networkPolicy,
-      };
-      return { content: [{ type: 'text', text: JSON.stringify(view, null, 2) }] };
-    }
-
+    // tool_schema and list_skills are no longer separate MCP tools — they're
+    // bash built-ins. The model invokes them as `bash list_skills ...` /
+    // `bash tool_schema --slug ...` which keeps the function-calling surface
+    // at exactly ONE tool (`bash`). See loader.ts for the implementations.
     return errorResult(`unknown tool: ${name}`);
   });
 

@@ -92,15 +92,29 @@ export async function runComposable(
   bash: Bash,
   opts: AgentOptions,
 ): Promise<RunResult> {
-  const toolList = manifest.tools
-    .map((t) => `- ${t.slug}: ${t.summary}. Output schema: ${JSON.stringify(t.outputSchema ?? {})}`)
-    .join('\n');
-
+  // Composable mode: the system prompt does NOT enumerate the registry.
+  // The model discovers what skills exist by running `bash list_skills`
+  // (optionally filtered with --capability or --search) and reads any
+  // skill's contract via `bash tool_schema --slug <name>`. This keeps
+  // the prompt O(catalog-subset) instead of O(catalog-total) — for a
+  // single-skill query the model carries forward only that one schema,
+  // not the entire registry.
+  //
+  // The mention of the manifest size is included only so the model knows
+  // a registry exists and roughly how big it is (helps it decide whether
+  // to filter the listing or load it whole). The actual contents are NOT
+  // exposed unless the model asks for them.
   const baseSystem =
-    `You have a single tool: \`bash\`. Compose registry commands with unix pipes.\n\n` +
-    `Available registry commands inside bash:\n${toolList}\n\n` +
+    `You have a single tool: \`bash\`. Use it to discover and invoke skills.\n\n` +
+    `${manifest.tools.length} skill(s) are available in the registry. To work with them:\n` +
+    `  bash list_skills                       — list every slug + summary\n` +
+    `  bash list_skills --capability <tag>    — filter by capability tag\n` +
+    `  bash list_skills --search <query>      — fuzzy match on slug/summary/capability\n` +
+    `  bash tool_schema --slug <name>         — read a skill's full input/output schema\n\n` +
     `Standard tools also available: jq, grep, sed, awk, xargs, head, wc, tr.\n` +
-    `Always use bash to act; never answer from training knowledge for live data. Be terse.\n` +
+    `Compose with pipes — only the final pipeline output crosses back to you.\n` +
+    `If a question is answerable from training knowledge alone (e.g. "capital of Spain"), ` +
+    `answer directly without invoking bash. For live data or registry skills, use bash.\n` +
     `Tool observations include tools_referenced (output_schema, example, jq_paths) ` +
     `and diagnostics. Read them to fix mistakes.\n` +
     UNTRUSTED_OUTPUT_FRAGMENT;

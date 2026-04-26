@@ -158,7 +158,7 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
     return { code, source };
   }
 
-  const commands = manifest.tools.map((tool) =>
+  const skillCommands = manifest.tools.map((tool) =>
     defineCommand(tool.slug, async (args: string[], ctx: BashCommandContext): Promise<BashResult> => {
       try {
         const input = parseArgvAgainstSchema(args, ctx.stdin, tool.inputSchema);
@@ -194,6 +194,90 @@ export async function loadRegistry(opts: LoaderOptions = {}): Promise<LoadedRegi
     }),
   );
 
+  // ─── Discovery built-ins: list_skills + tool_schema ────────────────────
+  // These are the mechanism that makes composable mode actually scale: the
+  // model sees ONLY `bash` upfront and uses these commands to discover
+  // what's available WITHOUT loading the full catalog into the system
+  // prompt.
+  //
+  // list_skills supports filtering so the model loads a SUBSET of the
+  // catalog, not all of it:
+  //   bash list_skills                          → all slugs (one per line)
+  //   bash list_skills --capability network     → only network-tagged
+  //   bash list_skills --search weather         → fuzzy-match on slug + summary
+  //   bash list_skills --json                   → full metadata as JSON
+  //
+  // Without these, "discovery" is indistinguishable from "preload" — the
+  // model has to learn about every skill anyway. With filtering, the model
+  // can ask "what skills handle X?" and only carry that subset forward.
+  const listSkillsCmd = defineCommand('list_skills', async (args: string[]): Promise<BashResult> => {
+    const opts = parseListSkillsArgs(args);
+    let entries = manifest.tools as SkillDef[];
+    if (opts.capability) {
+      entries = entries.filter((t) => (t.capabilities ?? []).includes(opts.capability!));
+    }
+    if (opts.search) {
+      const q = opts.search.toLowerCase();
+      entries = entries.filter((t) =>
+        t.slug.toLowerCase().includes(q) ||
+        t.summary.toLowerCase().includes(q) ||
+        (t.capabilities ?? []).some((c) => c.toLowerCase().includes(q)),
+      );
+    }
+    if (opts.json) {
+      const out = entries.map((t) => ({
+        slug: t.slug,
+        summary: t.summary,
+        capabilities: t.capabilities ?? [],
+        version: t.version,
+      }));
+      return { stdout: JSON.stringify(out, null, 2) + '\n', stderr: '', exitCode: 0 };
+    }
+    // Default: one line per skill — slug + summary. Token-frugal.
+    const lines = entries.map((t) => `${t.slug}: ${t.summary}`);
+    if (lines.length === 0) {
+      return { stdout: '', stderr: `no skills match the filter\n`, exitCode: 1 };
+    }
+    return { stdout: lines.join('\n') + '\n', stderr: '', exitCode: 0 };
+  });
+
+  const toolSchemaCmd = defineCommand('tool_schema', async (args: string[]): Promise<BashResult> => {
+    // Parse --slug <name> from args
+    let slug: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--slug' && i + 1 < args.length) { slug = args[i + 1]!; break; }
+      if (args[i]?.startsWith('--slug=')) { slug = args[i]!.slice('--slug='.length); break; }
+    }
+    if (!slug) {
+      return {
+        stdout: '',
+        stderr: `tool_schema requires --slug <name>. Use \`list_skills\` to discover available slugs.\n`,
+        exitCode: 1,
+      };
+    }
+    const tool = manifest.tools.find((t) => t.slug === slug);
+    if (!tool) {
+      return {
+        stdout: '',
+        stderr: `unknown skill: ${slug}. Use \`list_skills\` to see what's available.\n`,
+        exitCode: 1,
+      };
+    }
+    const view = {
+      slug:          tool.slug,
+      summary:       tool.summary,
+      version:       tool.version,
+      capabilities:  tool.capabilities ?? [],
+      sideEffects:   tool.sideEffects ?? 'none',
+      inputSchema:   tool.inputSchema,
+      outputSchema:  tool.outputSchema,
+      networkPolicy: tool.networkPolicy,
+    };
+    return { stdout: JSON.stringify(view, null, 2) + '\n', stderr: '', exitCode: 0 };
+  });
+
+  const commands = [...skillCommands, listSkillsCmd, toolSchemaCmd];
+
   return { manifest, commands };
 }
 
@@ -220,6 +304,37 @@ function filterEnv(env: Map<string, string>, allowed: string[]): Record<string, 
   for (const k of allowed) {
     const v = env.get(k);
     if (v != null) out[k] = v;
+  }
+  return out;
+}
+
+interface ListSkillsOpts {
+  capability: string | null;
+  search: string | null;
+  json: boolean;
+}
+
+/** Parse `--capability X --search Y --json` from argv. Tiny parser; the
+ *  shape is small enough that pulling in the schema-based parser is
+ *  overkill, but the option grammar matches exactly: --key value or
+ *  --key=value, with --json as a bare flag. */
+function parseListSkillsArgs(args: string[]): ListSkillsOpts {
+  const out: ListSkillsOpts = { capability: null, search: null, json: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--json') { out.json = true; continue; }
+    let key: string | null = null;
+    let val: string | null = null;
+    if (a.startsWith('--') && a.includes('=')) {
+      key = a.slice(2, a.indexOf('='));
+      val = a.slice(a.indexOf('=') + 1);
+    } else if (a.startsWith('--') && i + 1 < args.length && !args[i + 1]!.startsWith('--')) {
+      key = a.slice(2);
+      val = args[i + 1]!;
+      i++;
+    }
+    if (key === 'capability') out.capability = val;
+    else if (key === 'search') out.search = val;
   }
   return out;
 }

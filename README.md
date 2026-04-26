@@ -172,42 +172,88 @@ It exposes **two** tools, not N:
   the agent can introspect on demand instead of paying for N tool definitions
   upfront.
 
-### How discovery works without N upfront schemas
+### How discovery works — filtered, on-demand, NOT preloaded
 
-The bash tool's `description` field includes a one-line catalog of every
-registry skill (slug + summary). That gives the model **awareness** of
-what exists at zero token-cost beyond the tool list. When the model
-decides to actually use a skill it hasn't seen before, it calls
-`tool_schema --slug <name>` to get the full JSONSchema on demand. The
-trade-off: 6 lines of catalog upfront vs ~50 lines of tool definitions
-× 6 skills.
+The bash tool's `description` field does **NOT** enumerate the registry.
+The model sees only the count and the discovery commands. It loads
+schemas only when it decides to use them, and can filter the listing by
+capability or fuzzy search to keep the prompt small even with hundreds
+of skills.
+
+This is what makes the architecture genuinely O(catalog-subset) instead
+of O(catalog-total) — both classic-MCP and the previous version of this
+repo put the full catalog into every prompt regardless. Filtered
+discovery is the only mechanism that lets the model ask *"what skills
+handle networking?"* and load only those, rather than carrying every
+weather + dictionary + github schema for every query.
 
 ```
-Description of `bash` (excerpt the model receives in tools/list):
+Description of `bash` (the model receives this in tools/list):
 
-  Execute a bash command in a sandboxed environment with the following
-  registry tools available as commands (in addition to standard unix
-  commands like jq, grep, sed, awk, head, xargs, etc):
+  Execute a bash command in a sandboxed environment.
 
-    • dictionary — Look up an English word's definitions, parts of speech…
-    • echo-pretty — Echoes input text with optional case transformation…
-    • github-repo-info — Look up a public GitHub repo's stars, language…
-    • ip-info — Returns public IP and country code via api.country.is
-    • url2md — Convert a public web URL to clean markdown via …
-    • weather — Current weather + today's high/low for given coordinates…
+  Discover available skills by running:
+    bash list_skills                          → all skills (one slug + summary per line)
+    bash list_skills --capability <tag>       → filter by capability tag (e.g. network, lookup, transform)
+    bash list_skills --search <query>         → fuzzy search across slug, summary, capabilities
+    bash list_skills --json                   → full metadata as JSON
 
-  Compose tools using pipes for token efficiency: only the final pipeline
-  output is returned. Use `tool_schema --slug <name>` to introspect any
-  registry tool's input/output JSONSchema.
+  Inspect a specific skill's contract before using it:
+    bash tool_schema --slug <name>            → returns the full JSONSchema for input/output
+
+  Standard unix tools also available: jq, grep, sed, awk, xargs, head, wc, tr.
+
+  Compose tools with pipes for token efficiency …
 ```
+
+`list_skills` and `tool_schema` are **bash built-ins**, not separate
+MCP tools — that keeps the function-calling surface at exactly ONE
+tool (`bash`) regardless of registry size. The implementation lives
+in `client/loader.ts` (search for `defineCommand('list_skills', …)`).
+
+#### Verified end-to-end (Gemma 4 26B on Workers AI)
+
+Real trace of a model resolving "What ISO country code am I in?" with
+**no upfront catalog** in the system prompt:
+
+```
+Round 1: bash → list_skills              → discovers: ip-info, weather, ...
+Round 2: bash → list_skills              → re-reads (model double-checks)
+Round 3: bash → tool_schema --slug ip-info  → loads ONLY that contract
+Round 4: bash → ip-info                  → invokes
+Round 5: → "AR"  ✅ correct
+```
+
+Token comparison, same model + same query, two architectures:
+
+| Query | Old (catalog upfront) | New (filtered discovery) |
+|---|---:|---:|
+| "Capital of Spain" (no tool needed) | 403 input tokens | **291 input tokens (-28%)** |
+| "What country am I in?" (needs ip-info) | 459 in / 1 round | 2,347 in / 5 rounds |
+
+For the 6-skill registry, discovery wins on knowledge queries and
+loses on tool-required queries (the rounds add up). For a 100-skill
+registry the math flips — the old "catalog upfront" approach pays
+~2,500 tokens **per query**, while filtered discovery pays only the
+schemas the model actually inspects.
+
+#### Caveat: small open-weights can't drive discovery
+
+Discovery requires the model to reason "I need to find what's
+available" then act. Granite 4.0 H Micro improvises with
+`curl restcountries.com` instead. Qwen 2.5 Coder breaks the tool-call
+format. Llama and Hermes get stuck. **Only Gemma 4 26B (and presumably
+larger frontier models) successfully ran the discovery flow end-to-end
+in our tests.**
+
+For deployments targeting small open-weights, the older "catalog
+upfront" composable mode is still available — see commits before
+`<this-pr-sha>`. For Gemma 4 / frontier models, the filtered-discovery
+mode is what `mcp-server.ts` ships today.
 
 The thesis: composing tools through unix pipes is more token-efficient
 than discrete function calls **when the model can reliably write the
-composition**. The A/B benchmarks below show this only holds for some
-model classes — small open-weights models often benefit more from the
-classic mode's per-skill schemas (which act as a safety net via
-JSONSchema validation). Example pipeline run via a single MCP tool
-call:
+composition**. Example pipeline run via a single MCP tool call:
 
 ```bash
 ip-info | jq -r '.country' | xargs -I {} echo-pretty --text "{}" --upper --prefix "country=> "
