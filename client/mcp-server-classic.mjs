@@ -28,11 +28,16 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
+import { applyOverridesToManifest } from './skill-tuning.mjs';
 
 const REGISTRY = process.env.REGISTRY;
+const MODEL    = process.env.MODEL ?? '';
 
 async function main() {
-  const { manifest, commands } = await loadRegistry({ registry: REGISTRY });
+  const { manifest: rawManifest, commands } = await loadRegistry({ registry: REGISTRY });
+  // Apply per-model skill overrides if MODEL env identifies a target model.
+  // E.g. MODEL=hermes spawns a Hermes-tuned variant of the same registry.
+  const manifest = applyOverridesToManifest(rawManifest, MODEL);
   const bash = new Bash({ customCommands: commands });
 
   const server = new Server(
@@ -73,8 +78,10 @@ async function main() {
   });
 
   await server.connect(new StdioServerTransport());
+  const tunedTools = manifest.tools.filter((t) => rawManifest.tools.find((r) => r.slug === t.slug && JSON.stringify(r) !== JSON.stringify(t))).map((t) => t.slug);
   process.stderr.write(
-    `[agentic-tools-classic mcp] ready — ${manifest.tools.length} tool(s) exposed individually\n`
+    `[agentic-tools-classic mcp] ready — ${manifest.tools.length} skill(s) exposed individually` +
+    (MODEL ? ` (MODEL=${MODEL}, tuned: ${tunedTools.length ? tunedTools.join(',') : 'none'})` : '') + '\n'
   );
 }
 

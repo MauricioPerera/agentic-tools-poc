@@ -21,6 +21,12 @@ export const SKILL_SCHEMA = {
       type: 'object',
       properties: { allow: { type: 'array', items: { type: 'string' } } }
     },
+    // Per-model overrides. Keys are model-name substrings (case-insensitive),
+    // values are partial skill definitions that replace the matching fields.
+    // Only summary, description, and inputSchema are overridable for now.
+    model_overrides: {
+      type: 'object',
+    },
   }
 };
 

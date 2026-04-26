@@ -28,17 +28,18 @@ for (const slug of readdirSync(SKILLS_DIR)) {
     process.exit(1);
   }
   tools.push({
-    slug:          meta.slug,
-    name:          meta.name,
-    summary:       meta.summary,
-    version:       meta.version,
-    capabilities:  meta.capabilities ?? [],
-    sideEffects:   meta.sideEffects ?? 'none',
-    inputSchema:   meta.inputSchema,
-    outputSchema:  meta.outputSchema,
-    requiredEnv:   meta.requiredEnv ?? [],
-    networkPolicy: meta.networkPolicy ?? { allow: [] },
-    source:        bundle,
+    slug:            meta.slug,
+    name:            meta.name,
+    summary:         meta.summary,
+    version:         meta.version,
+    capabilities:    meta.capabilities ?? [],
+    sideEffects:     meta.sideEffects ?? 'none',
+    inputSchema:     meta.inputSchema,
+    outputSchema:    meta.outputSchema,
+    requiredEnv:     meta.requiredEnv ?? [],
+    networkPolicy:   meta.networkPolicy ?? { allow: [] },
+    model_overrides: meta.model_overrides ?? {},
+    source:          bundle,
   });
 }
 

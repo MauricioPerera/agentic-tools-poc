@@ -14,6 +14,7 @@ import { Bash } from 'just-bash';
 import { loadRegistry } from './loader.mjs';
 import { makeObservation } from './smart-bash.mjs';
 import { normalizeReply, tokensUsed } from './model-adapter.mjs';
+import { applyOverridesToManifest } from './skill-tuning.mjs';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
@@ -40,8 +41,15 @@ const QUERIES = [
   },
 ];
 
-const { manifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
+const { manifest: rawManifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
+// The skill catalog adapts to the model. Same source, different shape.
+const manifest = applyOverridesToManifest(rawManifest, MODEL);
 const bash = new Bash({ customCommands: commands });
+
+// Detect whether we're running with model-tuned skills (for header banner)
+const tuned = JSON.stringify(manifest) !== JSON.stringify(rawManifest);
+console.log(`Model: ${MODEL}`);
+console.log(`Skill tuning: ${tuned ? 'ON (model-specific overrides applied)' : 'OFF (default skill shape)'}\n`);
 
 const results = [];
 for (const q of QUERIES) {

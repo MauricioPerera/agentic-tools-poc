@@ -1,7 +1,7 @@
 slug: ip-info
 name: IP Info
 summary: Returns public IP and country code via api.country.is
-version: 1.0.1
+version: 1.1.0
 capabilities: [network, lookup]
 sideEffects: read
 inputSchema:
@@ -17,3 +17,21 @@ outputSchema:
     country: { type: string, description: "ISO 3166-1 alpha-2 country code" }
 networkPolicy:
   allow: [api.country.is]
+
+# Per-model variants of this skill. The loader picks the matching block when
+# the active model name matches a key (substring match). This is the "tuning"
+# layer of a skill — owned by the agent's author, not the API vendor.
+#
+# Hermes 2 Pro Mistral 7B insists on filling every optional schema field even
+# when the description says "defaults to caller's public IP". It also gives up
+# after a single failure. The override removes the parameter entirely (so it
+# can't be filled wrong) and rewrites the description to discourage retreat.
+model_overrides:
+  hermes:
+    summary: |
+      Returns YOUR own public IP and country code. Takes no arguments — call
+      with empty object {}. Never invent IP addresses; never give up if it
+      fails, retry with a different approach.
+    inputSchema:
+      type: object
+      properties: {}

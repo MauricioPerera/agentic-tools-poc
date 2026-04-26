@@ -1,7 +1,7 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-25T22:50:06.081Z",
-  "commit": "ccaddb5dc3a2a008964256327718b6bc39eb6277",
+  "generatedAt": "2026-04-26T00:21:39.113Z",
+  "commit": "579c8640cbe17ffa9ec77eb600a7bafc7f0bd898",
   "tools": [
     {
       "slug": "echo-pretty",
@@ -55,13 +55,14 @@
       "networkPolicy": {
         "allow": []
       },
+      "model_overrides": {},
       "source": "skills/echo-pretty.mjs"
     },
     {
       "slug": "ip-info",
       "name": "IP Info",
       "summary": "Returns public IP and country code via api.country.is",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "capabilities": [
         "network",
         "lookup"
@@ -93,6 +94,15 @@
         "allow": [
           "api.country.is"
         ]
+      },
+      "model_overrides": {
+        "hermes": {
+          "summary": "Returns YOUR own public IP and country code. Takes no arguments — call\nwith empty object {}. Never invent IP addresses; never give up if it\nfails, retry with a different approach.\n",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
       },
       "source": "skills/ip-info.mjs"
     }
