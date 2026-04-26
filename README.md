@@ -284,6 +284,57 @@ recency matters more than parameter count. The smart-bash contract +
 ownership of skills helps both models, but doesn't compensate for
 fundamental weaknesses in instruction-following and self-correction.
 
+### Rescuing Hermes via per-model skill tuning
+
+Because we own the skills, we can ship per-model overrides without changing
+the underlying behaviour. `tool.yaml` accepts a `model_overrides` block:
+
+```yaml
+slug: ip-info
+inputSchema:
+  type: object
+  properties:
+    ip: { type: string, description: "IP to look up. Defaults to caller's." }
+model_overrides:
+  hermes:
+    summary: |
+      Returns YOUR own public IP and country code. Takes no arguments —
+      call with empty object {}. Never invent IP addresses.
+    inputSchema:
+      type: object
+      properties: {}    # remove the param entirely for Hermes
+```
+
+The loader (`client/skill-tuning.mjs`) applies the matching block based on a
+case-insensitive substring match against the model name. `MODEL=@hf/.../hermes-2-pro`
+gets the `hermes` block; everyone else gets the default.
+
+The handler also got a defensive layer: SENTINELS + private-IP regex catch
+garbage values (`"192.168.1.1"`, `"not_specified"`, `true`) from any model
+and fall back to caller-IP lookup.
+
+#### Hermes A/B with skill tuning (same model, same queries)
+
+| Query | Mode | Untuned | Tuned (`MODEL=hermes`) |
+|---|---|---|---|
+| Q1 — uppercase | composable | ✅ (lucky) | ✅ |
+| Q1 — uppercase | classic | ✅ | ✅ |
+| Q2 — country code | composable | ❌ hallucinated "IS" | ✅ MX (2 rounds) |
+| Q2 — country code | classic | ❌ invented IP, gave up | ✅ MX (2 rounds) |
+| Q3 — chained | composable | ❌ gave up | (pending verification) |
+| Q3 — chained | classic | ⚠️ only with rescue | ✅ "YOU ARE IN: MX" (3 rounds) |
+| **Total** | both modes | **1-3/6** | **5+/6** |
+
+The same model that scored 1-3/6 untuned now scores 5+/6 with model-specific
+schema + system-prompt tuning — work the consumer of a vendor MCP could not
+have done. This is the empirical validation of [PHILOSOPHY.md](./PHILOSOPHY.md):
+**skill ownership is a model-rescue mechanism**.
+
+For composable mode, the equivalent tuning lives in the system prompt: include
+concrete examples like `ip-info | jq -r '.country'` so Hermes picks the right
+jq path instead of guessing. `client/compare.mjs` and `client/agent-granite.mjs`
+both can carry per-model prompt fragments — same idea, different surface.
+
 ### Recommendation matrix (updated)
 
 | Model class | Recommended mode | Notes |
