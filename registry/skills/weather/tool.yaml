@@ -1,0 +1,39 @@
+slug: weather
+name: Weather (Open-Meteo)
+summary: Current weather + today's high/low for given coordinates. No API key.
+version: 1.0.0
+capabilities: [network, lookup, weather]
+sideEffects: read
+inputSchema:
+  type: object
+  required: [latitude, longitude]
+  properties:
+    latitude:
+      type: number
+      description: "Decimal degrees, -90 to 90 (north positive)."
+    longitude:
+      type: number
+      description: "Decimal degrees, -180 to 180 (east positive)."
+outputSchema:
+  type: object
+  properties:
+    location:
+      type: string
+      description: "lat,lon canonical string, useful for downstream display."
+    temp_c:
+      type: number
+      description: "Current temperature in Celsius."
+    wind_kph:
+      type: number
+      description: "Current wind speed in km/h."
+    weather_code:
+      type: integer
+      description: "WMO weather code (0=clear, 3=overcast, 51-67=rain, 71-77=snow, 95=thunderstorm). See https://open-meteo.com/en/docs."
+    forecast_max_c:
+      type: number
+      description: "Today's forecast high in Celsius."
+    forecast_min_c:
+      type: number
+      description: "Today's forecast low in Celsius."
+networkPolicy:
+  allow: [api.open-meteo.com]

@@ -14,6 +14,7 @@
     "lint": "node scripts/lint.ts",
     "codegen": "node scripts/codegen-types.ts",
     "codegen:check": "node scripts/codegen-types.ts --check",
+    "smoke": "node scripts/smoke-test-skills.ts",
     "build": "node scripts/build.ts",
     "manifest": "node scripts/manifest.ts",
     "all": "npm run typecheck && npm run test && npm run validate && npm run lint && npm run codegen:check && npm run build && npm run manifest",

@@ -467,6 +467,28 @@ It also handles:
 - Negative path: domains without `## Skills` get a friendly hint pointing
   to the proposal issue, evangelizing adoption while degrading cleanly
 
+## The current registry
+
+Six skills live in `registry/skills/`, each one a TypeScript handler
+behind a `tool.yaml` contract:
+
+| Skill | API wrapped | Demonstrates |
+|---|---|---|
+| `echo-pretty` | (none — pure text transform) | Trusted-execution path, no network |
+| `ip-info` | `api.country.is` | Network gating, defensive arg handling, model_overrides |
+| `url2md` | `url2md.automators.work` | Auto-recovery (422 → retry with raw=1), structured response |
+| `github-repo-info` | `api.github.com` | Optional auth via requiredEnv, response trimming (~5KB → ~200B) |
+| `weather` | `api.open-meteo.com` | Numeric coord validation, projection of nested upstream JSON |
+| `dictionary` | `api.dictionaryapi.dev` | Nested array output (meanings[]), input format validation |
+
+Each skill is ≤100 lines of TS. All wrap public APIs directly — no
+vendor MCP servers. The full registry serves from jsDelivr at
+`https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@main/dist/manifest.json`
+in ~150ms cold, sub-ms warm via Cache API.
+
+`npm run smoke` runs every skill against its real upstream API as a
+sanity check (network-dependent, not part of `npm run all`).
+
 ## Type generation from tool.yaml
 
 `npm run codegen` reads each `registry/skills/<slug>/tool.yaml` and emits

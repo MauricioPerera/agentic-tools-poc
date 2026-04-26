@@ -1,8 +1,74 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-26T05:05:55.000Z",
+  "generatedAt": "2026-04-26T05:15:11.185Z",
   "commit": "391e5410f9898bb37190b24fe7be8ffae4d6b52b",
   "tools": [
+    {
+      "slug": "dictionary",
+      "name": "English Dictionary",
+      "summary": "Look up an English word's definitions, parts of speech, phonetic, and example sentences.",
+      "version": "1.0.0",
+      "capabilities": [
+        "network",
+        "lookup",
+        "language"
+      ],
+      "sideEffects": "read",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "word"
+        ],
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "Single English word to look up. No spaces or phrases."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The headword (echoed back, lowercased)."
+          },
+          "phonetic": {
+            "type": "string",
+            "description": "IPA phonetic transcription if available, else empty."
+          },
+          "meanings": {
+            "type": "array",
+            "description": "One entry per part of speech (noun, verb, etc).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "partOfSpeech": {
+                  "type": "string",
+                  "description": "noun | verb | adjective | adverb | …"
+                },
+                "definition": {
+                  "type": "string",
+                  "description": "Primary definition for this part of speech."
+                },
+                "example": {
+                  "type": "string",
+                  "description": "Example sentence if available, else empty."
+                }
+              }
+            }
+          }
+        }
+      },
+      "requiredEnv": [],
+      "networkPolicy": {
+        "allow": [
+          "api.dictionaryapi.dev"
+        ]
+      },
+      "model_overrides": {},
+      "source": "skills/dictionary.mjs"
+    },
     {
       "slug": "echo-pretty",
       "name": "Echo Pretty",
@@ -57,6 +123,78 @@
       },
       "model_overrides": {},
       "source": "skills/echo-pretty.mjs"
+    },
+    {
+      "slug": "github-repo-info",
+      "name": "GitHub Repo Info",
+      "summary": "Look up a public GitHub repo's stars, language, description, default branch, and last push.",
+      "version": "1.0.0",
+      "capabilities": [
+        "network",
+        "lookup",
+        "github"
+      ],
+      "sideEffects": "read",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "GitHub user or org owning the repo, e.g. 'cloudflare'."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repo name without owner, e.g. 'workers-sdk'."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "description": "owner/repo identifier."
+          },
+          "description": {
+            "type": "string",
+            "description": "Repo description (may be empty string if unset)."
+          },
+          "stars": {
+            "type": "integer",
+            "description": "Star count at fetch time."
+          },
+          "language": {
+            "type": "string",
+            "description": "Primary language detected by GitHub linguist (may be empty)."
+          },
+          "default_branch": {
+            "type": "string",
+            "description": "Default branch name, e.g. 'main' or 'master'."
+          },
+          "pushed_at": {
+            "type": "string",
+            "description": "ISO 8601 timestamp of the most recent push to any branch."
+          },
+          "url": {
+            "type": "string",
+            "description": "Public html_url of the repo."
+          }
+        }
+      },
+      "requiredEnv": [
+        "GITHUB_TOKEN"
+      ],
+      "networkPolicy": {
+        "allow": [
+          "api.github.com"
+        ]
+      },
+      "model_overrides": {},
+      "source": "skills/github-repo-info.mjs"
     },
     {
       "slug": "ip-info",
@@ -185,6 +323,72 @@
         }
       },
       "source": "skills/url2md.mjs"
+    },
+    {
+      "slug": "weather",
+      "name": "Weather (Open-Meteo)",
+      "summary": "Current weather + today's high/low for given coordinates. No API key.",
+      "version": "1.0.0",
+      "capabilities": [
+        "network",
+        "lookup",
+        "weather"
+      ],
+      "sideEffects": "read",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Decimal degrees, -90 to 90 (north positive)."
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Decimal degrees, -180 to 180 (east positive)."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "lat,lon canonical string, useful for downstream display."
+          },
+          "temp_c": {
+            "type": "number",
+            "description": "Current temperature in Celsius."
+          },
+          "wind_kph": {
+            "type": "number",
+            "description": "Current wind speed in km/h."
+          },
+          "weather_code": {
+            "type": "integer",
+            "description": "WMO weather code (0=clear, 3=overcast, 51-67=rain, 71-77=snow, 95=thunderstorm). See https://open-meteo.com/en/docs."
+          },
+          "forecast_max_c": {
+            "type": "number",
+            "description": "Today's forecast high in Celsius."
+          },
+          "forecast_min_c": {
+            "type": "number",
+            "description": "Today's forecast low in Celsius."
+          }
+        }
+      },
+      "requiredEnv": [],
+      "networkPolicy": {
+        "allow": [
+          "api.open-meteo.com"
+        ]
+      },
+      "model_overrides": {},
+      "source": "skills/weather.mjs"
     }
   ]
 }

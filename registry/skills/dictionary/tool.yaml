@@ -1,0 +1,39 @@
+slug: dictionary
+name: English Dictionary
+summary: Look up an English word's definitions, parts of speech, phonetic, and example sentences.
+version: 1.0.0
+capabilities: [network, lookup, language]
+sideEffects: read
+inputSchema:
+  type: object
+  required: [word]
+  properties:
+    word:
+      type: string
+      description: "Single English word to look up. No spaces or phrases."
+outputSchema:
+  type: object
+  properties:
+    word:
+      type: string
+      description: "The headword (echoed back, lowercased)."
+    phonetic:
+      type: string
+      description: "IPA phonetic transcription if available, else empty."
+    meanings:
+      type: array
+      description: "One entry per part of speech (noun, verb, etc)."
+      items:
+        type: object
+        properties:
+          partOfSpeech:
+            type: string
+            description: "noun | verb | adjective | adverb | …"
+          definition:
+            type: string
+            description: "Primary definition for this part of speech."
+          example:
+            type: string
+            description: "Example sentence if available, else empty."
+networkPolicy:
+  allow: [api.dictionaryapi.dev]
