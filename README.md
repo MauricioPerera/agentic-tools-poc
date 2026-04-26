@@ -248,6 +248,22 @@ MODEL=@hf/nousresearch/hermes-2-pro-mistral-7b CF_ACCOUNT_ID=… CF_API_TOKEN=�
 | **Totals** | composable | **9** | **3779** | **3/3** |
 | **Totals** | classic | **7** | **2651** | **3/3** |
 
+### Results — Google Gemma 4 26B-a4b-it ($0.10/M in, $0.30/M out)
+
+Response shape is OpenAI-compatible (same as Granite — no adapter changes
+needed). Notably emits a `reasoning` field with explicit chain-of-thought
+before each tool call, which inflates token costs.
+
+| Query | Mode | Rounds | Tokens | Correct |
+|---|---|---:|---:|:---:|
+| Q1 — uppercase | composable | 1 | 127 | ⚠️ skipped tool entirely, answered from training (got it right but failed the "always use bash" instruction) |
+| Q1 | classic | 2 | 490 | ✅ AGENTIC TOOLS POC |
+| Q2 — country code | composable | 2 | 436 | ✅ MX |
+| Q2 | classic | 2 | 611 | ✅ MX |
+| Q3 — chained | composable | 3 | 898 | ✅ YOU ARE IN: MX (saved by defensive `ip-info` handler that ignored Gemma's stray `ip-info country` arg) |
+| Q3 | classic | 4+ | 1874+ | ❌ stuck in loop — repeatedly called `echo-pretty` with `prefix: "YOU ARE IN: 1"` (extra "1" character, recognized the bug in `reasoning` but couldn't fix the action) |
+| **Totals** | both modes | 12+ | 4436+ | **4-5/6** |
+
 ### Results — Hermes 2 Pro Mistral (7B, beta)
 
 Caveats: token counts are **char-based estimates** (`~chars/4`) because
@@ -268,21 +284,34 @@ arguments) — the new `client/model-adapter.mjs` normalizes both.
 
 ### Cross-model takeaway
 
-| | Granite 4.0 H Micro (3.4B) | Hermes 2 Pro Mistral (7B beta) |
-|---|---|---|
-| Total correctness (composable) | 3/3 | 1/3 |
-| Total correctness (classic) | 3/3 | 1-2/3 |
-| Self-correction on tool failure | ✅ Tries alternative paths | ❌ Gives up after one failure |
-| Hallucination resistance | ✅ Stays in tool world | ❌ Invents IPs, countries, files |
-| Follows "reply with just the result" | ✅ | ❌ Adds apologetic prose |
-| Native tool-call format quality | Double-encoded args (quirk) | Cleaner: parsed object args, no wrapper |
-| Reported tokens | ✅ Real | ❌ Always 0 (broken in beta) |
+|  | Granite 4.0 H Micro (3.4B, free) | Hermes 2 Pro Mistral (7B beta, free) | Gemma 4 26B-a4b (paid) |
+|---|---|---|---|
+| Composable correctness | 3/3 | 1/3 → 3/3 (with skill tuning) | 2/3 (1 skipped tool) |
+| Classic correctness | 3/3 | 1-2/3 → 3/3 (with skill tuning) | 2/3 (Q3 stuck in loop) |
+| Self-correction on tool failure | ✅ Tries alternatives | ❌ Gives up | ⚠️ Identifies bug in reasoning, can't fix action |
+| Hallucination resistance | ✅ Stays in tool world | ❌ Invents IPs, countries | ✅ Stays in tool world |
+| Skips tool when it can answer directly | ❌ Always uses tool | ❌ Always tries | ⚠️ Skips simple tasks (Q1 composable) |
+| Follows "reply with just the result" | ✅ | ❌ Adds apologetic prose | ✅ |
+| Native tool-call format | Double-encoded args | Parsed args, no wrapper | OpenAI standard |
+| Reported tokens | ✅ Real | ❌ Always 0 (beta) | ✅ Real (with reasoning eating budget) |
+| Cost per query (3-q suite) | ~$0 (free tier) | ~$0 (free tier) | ~$0.0015 (paid) |
 
-**Counter-intuitive but well-supported: smaller, newer Granite outperforms
-larger, older Hermes for our skill-driven agent pattern.** Tool fine-tuning
-recency matters more than parameter count. The smart-bash contract +
-ownership of skills helps both models, but doesn't compensate for
-fundamental weaknesses in instruction-following and self-correction.
+**Two counter-intuitive findings:**
+
+1. **Granite (3.4B free) beats Gemma (26B paid) for tool-driven tasks.**
+   Gemma's reasoning capability is a liability here — it eats tokens
+   without improving outcomes, and on Q3 classic it gets stuck in a
+   tokenization-induced loop ("YOU ARE IN: 1MX") that Granite avoided.
+
+2. **Parameter count is a bad predictor of tool-calling reliability.**
+   Tool fine-tuning recency dominates. A small model trained recently
+   for tool use (Granite 4.0) outperforms a 26B reasoning model (Gemma 4)
+   AND a 7B older instruct model (Hermes) on the same suite.
+
+The smart-bash contract + ownership of skills amplifies what each model
+can do, but cannot compensate for fundamental weaknesses in
+instruction-following, action-reasoning alignment, or output formatting
+discipline.
 
 ### Rescuing Hermes via per-model skill tuning
 
@@ -339,10 +368,15 @@ both can carry per-model prompt fragments — same idea, different surface.
 
 | Model class | Recommended mode | Notes |
 |---|---|---|
-| Tool-tuned small (Granite 4.0 micro) | **classic** primary, composable for simple tasks | JSONSchema validation as safety net works well |
-| Older 7B (Hermes 2 Pro, OpenHermes 2.5) | classic — but consider switching model | Hallucinates aggressively, gives up after failure |
-| Mid-tier (8B–70B) | A/B both for your domain | Depends on task mix |
+| **Tool-tuned small (Granite 4.0 micro, free)** | **classic** primary, composable for simple tasks | Best free-tier choice we tested — 6/6 in suite. JSONSchema acts as safety net. |
+| Older 7B (Hermes 2 Pro, OpenHermes 2.5, free beta) | classic + per-model skill tuning | Tuning rescues from 1-3/6 to 5+/6 — mandatory for production use |
+| Reasoning mid-tier (Gemma 4 26B-a4b, paid) | classic — watch for tokenization-induced loops | 4-5/6, reasoning eats tokens without improving outcomes |
 | Frontier (Claude, GPT-4o) | **composable** | Reliable bash composition, fewer tokens |
+
+**Pragmatic conclusion**: for free-tier production agents on Cloudflare,
+**Granite 4.0 H Micro + classic MCP + smart-bash contract** is our
+recommended stack. Larger / paid models did not improve outcomes on this
+suite.
 
 
 
