@@ -467,12 +467,39 @@ It also handles:
 - Negative path: domains without `## Skills` get a friendly hint pointing
   to the proposal issue, evangelizing adoption while degrading cleanly
 
+## Skill linter
+
+`npm run lint` runs a semantic linter over every `tool.yaml`. It encodes
+the antipatterns observed empirically when running real models against the
+registry — e.g. optional fields without descriptions cause Hermes 7B to
+invent values. Eight rules across three severities:
+
+| Rule | Severity | What it detects |
+|---|---|---|
+| `optional-string-no-description` | warning | Optional string field missing a description |
+| `optional-no-default` | warning | Optional field with no explicit default |
+| `required-no-description` | error | Required field missing a description |
+| `output-schema-missing` | error | No outputSchema → smart-bash can't introspect |
+| `destructive-no-warning` | warning | sideEffects: destructive but no safety language |
+| `summary-too-long` | warning | summary > 120 chars (lives in every tools/list) |
+| `optionals-without-tuning` | info | 2+ optional fields and no model_overrides — likely needs per-model tuning |
+| `network-skill-no-policy` | warning | network capability declared but allow list empty |
+
+`npm run lint` exits non-zero on errors (warnings + info don't block).
+`npm run lint -- --all` shows info-severity suggestions too.
+
+The linter found one warning on the existing registry (`ip-info.ip` was
+optional without an explicit default) which has been fixed; one info
+finding remains (`echo-pretty` has 3 optional fields and no
+`model_overrides`, suggesting per-model tuning may be worthwhile).
+
 ## Status
 
 - ✅ Phase 1: trusted in-process execution via dynamic `import()`.
 - ✅ MCP server (composable) with `bash` + `tool_schema`.
 - ✅ MCP server (classic) with one tool per registry entry.
 - ✅ Smart-bash observation contract (schema + diagnostics + jq_paths).
+- ✅ Skill linter (8 semantic rules, 27 unit tests).
 - ✅ End-to-end validated with Workers AI Granite 4.0 H Micro,
   Hermes 2 Pro Mistral 7B, and Gemma 4 26B-a4b-it.
 - ✅ Composable vs classic A/B benchmark across all three models.

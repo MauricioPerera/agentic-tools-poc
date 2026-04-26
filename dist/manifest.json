@@ -1,6 +1,6 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-26T02:58:03.386Z",
+  "generatedAt": "2026-04-26T04:50:46.819Z",
   "commit": "7fc6392bfb96366f58ffb1ac7f4af3b7f3c7fe8a",
   "tools": [
     {
@@ -73,7 +73,8 @@
         "properties": {
           "ip": {
             "type": "string",
-            "description": "IP to look up. Defaults to the caller's public IP."
+            "default": "",
+            "description": "IP to look up. Empty string (default) → caller's public IP."
           }
         }
       },
