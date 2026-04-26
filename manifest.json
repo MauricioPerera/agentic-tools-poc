@@ -1,7 +1,7 @@
 {
   "registryVersion": "1.0",
-  "generatedAt": "2026-04-26T19:01:20.636Z",
-  "commit": "dc0bb102587cdb9cf6f3e115d6d3725d46a28e5e",
+  "generatedAt": "2026-04-26T19:32:55.241Z",
+  "commit": "742b857e3c1f6a27ab985b7f72b210a3e2145d37",
   "tools": [
     {
       "slug": "dictionary",
@@ -68,7 +68,14 @@
       },
       "model_overrides": {},
       "source": "skills/dictionary.mjs",
-      "sha256": "c06b91fd3984849fcbd1edde634e6510d87854719c6e9ed7d1c15683990a9664"
+      "sha256": "c06b91fd3984849fcbd1edde634e6510d87854719c6e9ed7d1c15683990a9664",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": "skills/dictionary@1.0.0.mjs",
+          "sha256": "c06b91fd3984849fcbd1edde634e6510d87854719c6e9ed7d1c15683990a9664"
+        }
+      ]
     },
     {
       "slug": "echo-pretty",
@@ -124,7 +131,14 @@
       },
       "model_overrides": {},
       "source": "skills/echo-pretty.mjs",
-      "sha256": "c05bd15d4c9e836c7478050fa093fee1733df77ec8b50a5078f02207f8514187"
+      "sha256": "c05bd15d4c9e836c7478050fa093fee1733df77ec8b50a5078f02207f8514187",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": "skills/echo-pretty@1.0.0.mjs",
+          "sha256": "c05bd15d4c9e836c7478050fa093fee1733df77ec8b50a5078f02207f8514187"
+        }
+      ]
     },
     {
       "slug": "github-repo-info",
@@ -197,7 +211,14 @@
       },
       "model_overrides": {},
       "source": "skills/github-repo-info.mjs",
-      "sha256": "dcfc5a5e1c6e633785bb24879dfbf2a6bead6e5b19f00cc262391f741b62f18f"
+      "sha256": "dcfc5a5e1c6e633785bb24879dfbf2a6bead6e5b19f00cc262391f741b62f18f",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": "skills/github-repo-info@1.0.0.mjs",
+          "sha256": "dcfc5a5e1c6e633785bb24879dfbf2a6bead6e5b19f00cc262391f741b62f18f"
+        }
+      ]
     },
     {
       "slug": "ip-info",
@@ -251,7 +272,14 @@
         }
       },
       "source": "skills/ip-info.mjs",
-      "sha256": "82aa951d78378f8cab2c1ce3b7149f8fa3637130f7a2186d7354828584c3ce4d"
+      "sha256": "82aa951d78378f8cab2c1ce3b7149f8fa3637130f7a2186d7354828584c3ce4d",
+      "versions": [
+        {
+          "version": "1.1.0",
+          "source": "skills/ip-info@1.1.0.mjs",
+          "sha256": "82aa951d78378f8cab2c1ce3b7149f8fa3637130f7a2186d7354828584c3ce4d"
+        }
+      ]
     },
     {
       "slug": "url2md",
@@ -328,7 +356,14 @@
       },
       "outputCap": 4096,
       "source": "skills/url2md.mjs",
-      "sha256": "5f24be1291dc290787d3a93af8331881f2a708b70efe4bd78f1604b049f91871"
+      "sha256": "5f24be1291dc290787d3a93af8331881f2a708b70efe4bd78f1604b049f91871",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": "skills/url2md@1.0.0.mjs",
+          "sha256": "5f24be1291dc290787d3a93af8331881f2a708b70efe4bd78f1604b049f91871"
+        }
+      ]
     },
     {
       "slug": "weather",
@@ -395,7 +430,14 @@
       },
       "model_overrides": {},
       "source": "skills/weather.mjs",
-      "sha256": "857561ad45da6981f158223b3830f3c933852ab37542cfe27860044f56c71d77"
+      "sha256": "857561ad45da6981f158223b3830f3c933852ab37542cfe27860044f56c71d77",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": "skills/weather@1.0.0.mjs",
+          "sha256": "857561ad45da6981f158223b3830f3c933852ab37542cfe27860044f56c71d77"
+        }
+      ]
     }
   ]
 }
