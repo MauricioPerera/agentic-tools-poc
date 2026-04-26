@@ -1,5 +1,5 @@
 /**
- * skill-tuning.mjs — applies per-model overrides from a skill's tool.yaml.
+ * skill-tuning.ts — applies per-model overrides from a skill's tool.yaml.
  *
  * The same registry, served by the same MCP server, exposes a slightly
  * different shape per model — because we own the skills.
@@ -7,21 +7,26 @@
  * Match is substring + case-insensitive: a tool with `model_overrides.hermes`
  * applies to any model id containing "hermes" (e.g. `@hf/.../hermes-2-pro`).
  *
- * Only `summary`, `description`, and `inputSchema` are overridable today.
- * Behaviour (the source bundle) is not — that stays consistent.
+ * `summary`, `description`, `inputSchema` replace fields on the tool descriptor.
+ * `system_prompt_fragments` aggregates across all skills (collected by
+ * getSystemPromptFragments) and is injected into the agent's system prompt.
  */
+import type { Manifest, ModelOverride, SkillDef } from '../types/index.ts';
 
 // Fields that can be overridden directly on the skill descriptor.
-const OVERRIDABLE_FIELDS = new Set(['summary', 'description', 'inputSchema']);
+const OVERRIDABLE_FIELDS = new Set<keyof ModelOverride>(['summary', 'description', 'inputSchema']);
 
 // Fields that aggregate across all skills and feed the agent's system prompt.
-const AGGREGATED_FIELDS = new Set(['system_prompt_fragments']);
+const AGGREGATED_FIELDS = new Set<keyof ModelOverride>(['system_prompt_fragments']);
 
 /**
  * Find the override block matching the active model, if any.
  * Match is substring + case-insensitive ("hermes" matches `@hf/.../hermes-2-pro`).
  */
-function matchOverride(modelOverrides, model) {
+function matchOverride(
+  modelOverrides: Record<string, ModelOverride> | undefined,
+  model: string | undefined,
+): ModelOverride | null {
   if (!modelOverrides || !model) return null;
   const m = String(model).toLowerCase();
   for (const [key, override] of Object.entries(modelOverrides)) {
@@ -30,18 +35,22 @@ function matchOverride(modelOverrides, model) {
   return null;
 }
 
-export function applyModelOverrides(tool, model) {
+export function applyModelOverrides(tool: SkillDef, model: string | undefined): SkillDef {
   const override = matchOverride(tool.model_overrides, model);
   if (!override) return tool;
 
-  const out = { ...tool };
+  const out: SkillDef = { ...tool };
   for (const [k, v] of Object.entries(override)) {
-    if (OVERRIDABLE_FIELDS.has(k)) out[k] = v;
+    if (OVERRIDABLE_FIELDS.has(k as keyof ModelOverride)) {
+      // Safe assignment: OVERRIDABLE_FIELDS is restricted to fields that
+      // exist on SkillDef with compatible types in ModelOverride.
+      (out as unknown as Record<string, unknown>)[k] = v;
+    }
   }
   return out;
 }
 
-export function applyOverridesToManifest(manifest, model) {
+export function applyOverridesToManifest(manifest: Manifest, model: string | undefined): Manifest {
   return {
     ...manifest,
     tools: manifest.tools.map((t) => applyModelOverrides(t, model)),
@@ -58,14 +67,13 @@ export function applyOverridesToManifest(manifest, model) {
  *     hermes:
  *       system_prompt_fragments:
  *         - "When ip-info fails, retry with different args. Never invent IPs."
- *
- * @param {object} manifest  the (possibly already-overridden) registry manifest
- * @param {string} model     the active model name
- * @returns {string[]}       fragments in registration order, deduplicated
  */
-export function getSystemPromptFragments(manifest, model) {
-  const fragments = [];
-  const seen = new Set();
+export function getSystemPromptFragments(
+  manifest: Manifest | null | undefined,
+  model: string | undefined,
+): string[] {
+  const fragments: string[] = [];
+  const seen = new Set<string>();
   for (const tool of manifest?.tools ?? []) {
     const override = matchOverride(tool.model_overrides, model);
     const list = override?.system_prompt_fragments;

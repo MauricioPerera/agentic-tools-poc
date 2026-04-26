@@ -12,25 +12,48 @@
  * 5. Meta:      composes naturally with `jq -r .markdown`, `wc`, `head`,
  *               or downstream LLM calls in pipelines
  */
+import type { SkillHandler, ToolContext } from '../../../../types/index.ts';
+
+interface Input {
+  url: string;
+  raw?: boolean;
+}
+
+interface Output {
+  title: string | null;
+  source: string;
+  markdown: string;
+  length: number;
+}
 
 const BASE = 'https://url2md.automators.work/md';
 
-function buildUrl(url, raw) {
+function buildUrl(url: string, raw: boolean): string {
   const params = new URLSearchParams({ url });
   if (raw) params.set('raw', '1');
-  return `${BASE}?${params}`;
+  return `${BASE}?${params.toString()}`;
 }
 
-function isAbsoluteHttp(s) {
+function isAbsoluteHttp(s: unknown): s is string {
   return typeof s === 'string' && /^https?:\/\/[^\s]+$/i.test(s);
 }
 
-async function fetchOnce(target, ctx) {
-  const res = await ctx.fetch(target);
-  return { status: res.status, ok: res.ok, body: res.ok ? await res.text() : await res.text().catch(() => '') };
+interface FetchResult {
+  status: number;
+  ok: boolean;
+  body: string;
 }
 
-export default async function handler(input, ctx) {
+async function fetchOnce(target: string, ctx: ToolContext): Promise<FetchResult> {
+  const res = await ctx.fetch(target);
+  return {
+    status: res.status,
+    ok: res.ok,
+    body: res.ok ? await res.text() : await res.text().catch(() => ''),
+  };
+}
+
+const handler: SkillHandler<Input, Output> = async (input, ctx) => {
   if (!isAbsoluteHttp(input?.url)) {
     throw new Error('url must be an absolute http(s) URL');
   }
@@ -42,8 +65,7 @@ export default async function handler(input, ctx) {
   let res = await fetchOnce(target, ctx);
 
   // Recovery layer: if readability extraction failed (422) and we didn't
-  // already try raw mode, retry once with raw=1. Removes a class of model
-  // failures (forgetting to set the flag on retry).
+  // already try raw mode, retry once with raw=1.
   if (res.status === 422 && !wantRaw) {
     target = buildUrl(input.url, true);
     ctx.log(`GET ${target} (auto-fallback after 422)`);
@@ -51,25 +73,28 @@ export default async function handler(input, ctx) {
   }
 
   if (!res.ok) {
-    const reason = ({
+    const reasonMap: Record<number, string> = {
       400: 'invalid url, disallowed scheme, or private host',
       413: 'upstream body exceeded 5 MB',
       415: 'upstream returned non-HTML content-type',
       422: 'could not extract readable content even in raw mode',
       502: 'upstream fetch failed',
-    })[res.status] ?? 'unknown error';
+    };
+    const reason = reasonMap[res.status] ?? 'unknown error';
     throw new Error(`url2md returned ${res.status}: ${reason}`);
   }
 
   const md = res.body;
   // Response format documented as: "# {title}\n\n> Source: {url}\n\n{body}"
-  const titleMatch  = md.match(/^# (.+?)$/m);
+  const titleMatch = md.match(/^# (.+?)$/m);
   const sourceMatch = md.match(/^> Source: (.+?)$/m);
 
   return {
-    title:    titleMatch?.[1]?.trim() ?? null,
-    source:   sourceMatch?.[1]?.trim() ?? input.url,
+    title: titleMatch?.[1]?.trim() ?? null,
+    source: sourceMatch?.[1]?.trim() ?? input.url,
     markdown: md,
-    length:   md.length,
+    length: md.length,
   };
-}
+};
+
+export default handler;

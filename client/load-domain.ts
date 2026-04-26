@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * load-domain.mjs — CLI demo of the discovery flow proposed in
+ * load-domain.ts — CLI demo of the discovery flow proposed in
  *   https://github.com/AnswerDotAI/llms-txt/issues/116
  *
  * Implements §2.3 of https://img.automators.work/docs/rfc-skills-in-llms-txt.md
  * up to step 4 (surface skills to user). Steps 5-7 (opt-in, load, cache) are
  * the agent host's responsibility.
  *
- *   node client/load-domain.mjs https://img.automators.work
- *   node client/load-domain.mjs https://url2md.automators.work
- *   node client/load-domain.mjs https://example.com  --json
+ *   node client/load-domain.ts https://img.automators.work
+ *   node client/load-domain.ts https://url2md.automators.work
+ *   node client/load-domain.ts https://example.com  --json
  */
-import { loadDomainSkills } from './llms-txt-loader.mjs';
+import { loadDomainSkills } from './llms-txt-loader.ts';
 
 const args = process.argv.slice(2);
 const json = args.includes('--json');
@@ -19,12 +19,12 @@ const verbose = args.includes('-v') || args.includes('--verbose');
 const domain = args.find((a) => a.startsWith('http'));
 
 if (!domain) {
-  console.error('usage: load-domain.mjs <domain> [--json] [-v]');
-  console.error('example: load-domain.mjs https://img.automators.work');
+  console.error('usage: load-domain.ts <domain> [--json] [-v]');
+  console.error('example: load-domain.ts https://img.automators.work');
   process.exit(2);
 }
 
-const log = verbose ? (m) => console.error(`  [loader] ${m}`) : () => {};
+const log = verbose ? (m: string) => console.error(`  [loader] ${m}`) : () => {};
 
 try {
   const result = await loadDomainSkills(domain, { log });
@@ -33,7 +33,7 @@ try {
     process.exit(0);
   }
 
-  const banner = (s) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
+  const banner = (s: string) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
 
   banner(`${result.domain}`);
   console.log(`llms.txt:  ${result.llms_txt_url}`);
@@ -48,7 +48,6 @@ try {
     if (s.sha256)   console.log(`sha256:      ${s.sha256.slice(0, 16)}… ${s.verified ? '✓ verified' : ''}`);
     console.log(`body:        ${s.body.length} chars`);
 
-    // Show frontmatter at a glance — useful for debugging spec compliance
     const knownKeys = ['name', 'description', 'version', 'license', 'homepage'];
     const extras = Object.keys(s.frontmatter).filter((k) => !knownKeys.includes(k));
     if (extras.length) console.log(`extra frontmatter keys: ${extras.join(', ')}`);
@@ -58,7 +57,8 @@ try {
     console.log(`\nNo \`## Skills\` section found in llms.txt at ${result.llms_txt_url}.`);
     console.log(`See https://github.com/AnswerDotAI/llms-txt/issues/116 for the proposed format.`);
   }
-} catch (e) {
-  console.error(`error: ${e.message}`);
+} catch (e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  console.error(`error: ${msg}`);
   process.exit(1);
 }

@@ -1,5 +1,5 @@
 /**
- * smart-bash.mjs — wraps just-bash exec with a richer observation contract
+ * smart-bash.ts — wraps just-bash exec with a richer observation contract
  * intended to make small open-weights models (e.g. Granite 4.0 H Micro)
  * converge in fewer retries.
  *
@@ -19,8 +19,19 @@
  * The contract is intentionally token-frugal: extras only appear when they
  * carry signal. A clean exec returns the same minimal JSON as before.
  */
+import type {
+  BashResult,
+  JSONSchema,
+  Manifest,
+  Observation,
+  SchemaCheck,
+  SkillDef,
+  ToolReference,
+} from '../types/index.ts';
 
-function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Detect a registry tool by name in a bash command, **outside of quoted strings
@@ -28,38 +39,43 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
  * tokens too; this version walks the command character by character, tracking
  * single/double-quote state, before testing the tool token.
  */
-function commandReferencesTool(command, slug) {
+function commandReferencesTool(command: string, slug: string): boolean {
   const re = new RegExp(`(^|[\\s|;&(])${escapeRegex(slug)}(\\s|$|[|;&)])`);
   const cleaned = stripQuotedRegions(command);
   return re.test(cleaned);
 }
 
 /** Replace contents of single- and double-quoted regions with spaces of equal length. */
-function stripQuotedRegions(s) {
+function stripQuotedRegions(s: string): string {
   let out = '';
-  let inSingle = false, inDouble = false;
+  let inSingle = false;
+  let inDouble = false;
   for (let i = 0; i < s.length; i++) {
-    const c = s[i];
+    const c = s[i]!;
     const prev = s[i - 1];
-    if (c === "'" && prev !== '\\' && !inDouble)  { inSingle = !inSingle; out += c; continue; }
-    if (c === '"' && prev !== '\\' && !inSingle)  { inDouble = !inDouble; out += c; continue; }
-    out += (inSingle || inDouble) ? ' ' : c;
+    if (c === "'" && prev !== '\\' && !inDouble) { inSingle = !inSingle; out += c; continue; }
+    if (c === '"' && prev !== '\\' && !inSingle) { inDouble = !inDouble; out += c; continue; }
+    out += inSingle || inDouble ? ' ' : c;
   }
   return out;
 }
 
-export function makeObservation(command, result, manifest) {
+export function makeObservation(
+  command: string,
+  result: BashResult,
+  manifest: Manifest,
+): Observation {
   const stdout = (result.stdout ?? '').replace(/\n+$/, '');
   const stderr = (result.stderr ?? '').replace(/\n+$/, '');
   const exitCode = result.exitCode ?? 0;
 
-  const obs = { exitCode, stdout, stderr };
+  const obs: Observation = { exitCode, stdout, stderr };
 
   // 1. Identify registry tools referenced in the command, ignoring tool names
   //    that only appear inside quoted strings (e.g. `echo "ip-info is a tool"`).
   const tools = manifest.tools.filter((t) => commandReferencesTool(command, t.slug));
   if (tools.length) {
-    obs.tools_referenced = tools.map((t) => ({
+    obs.tools_referenced = tools.map<ToolReference>((t) => ({
       slug: t.slug,
       output_schema: t.outputSchema,
       example: synthesizeExample(t.outputSchema),
@@ -70,41 +86,48 @@ export function makeObservation(command, result, manifest) {
   // 2. Identify whether the LAST stage of the pipeline is a registry tool
   //    (vs a post-processor like jq/grep). If so, validate stdout shape.
   const lastStage = lastPipelineStage(command);
-  const lastTool  = manifest.tools.find((t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '));
+  const lastTool = manifest.tools.find(
+    (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
+  );
   if (lastTool && exitCode === 0 && stdout) {
     obs.schema_check = validateAgainstSchema(stdout, lastTool.outputSchema);
   } else if (tools.length && exitCode === 0 && stdout) {
     obs.schema_check = {
       validated: false,
-      reason: `Pipeline ends in a transform (${lastStage ?? 'unknown'}), not a registry tool — ` +
+      reason:
+        `Pipeline ends in a transform (${lastStage ?? 'unknown'}), not a registry tool — ` +
         `final stdout shape is up to your post-processing. Compare to the example ` +
         `output of the upstream registry tool listed in tools_referenced.`,
     };
   }
 
   // 3. Pattern-matched diagnostics (the high-value bit)
-  const diag = [];
+  const diag: string[] = [];
 
   // jq path traversal failure → almost always wrong nesting assumption
-  if (/jq:.*parse error.*Cannot index/i.test(stderr) ||
-      /jq:.*error.*has no keys/i.test(stderr)) {
+  if (
+    /jq:.*parse error.*Cannot index/i.test(stderr) ||
+    /jq:.*error.*has no keys/i.test(stderr)
+  ) {
     const upstream = tools[0];
     diag.push(
       `jq could not traverse the path you used. ` +
-      (upstream
-        ? `Upstream tool '${upstream.slug}' returns ${formatSchemaShape(upstream.outputSchema)} — ` +
-          `use jq paths that match THAT shape (e.g. \`.${firstScalarField(upstream.outputSchema) ?? 'field'}\` ` +
-          `for a flat field), not nested paths.`
-        : `Check the source JSON shape before constructing the jq path.`)
+        (upstream
+          ? `Upstream tool '${upstream.slug}' returns ${formatSchemaShape(upstream.outputSchema)} — ` +
+            `use jq paths that match THAT shape (e.g. \`.${firstScalarField(upstream.outputSchema) ?? 'field'}\` ` +
+            `for a flat field), not nested paths.`
+          : `Check the source JSON shape before constructing the jq path.`),
     );
   }
 
   // jq received non-JSON
-  if (/jq:.*parse error.*Invalid numeric literal/i.test(stderr) ||
-      /jq:.*compile error/i.test(stderr)) {
+  if (
+    /jq:.*parse error.*Invalid numeric literal/i.test(stderr) ||
+    /jq:.*compile error/i.test(stderr)
+  ) {
     diag.push(
       `jq received invalid JSON or had a syntax error in the filter. ` +
-      `Verify the upstream command emits a single JSON value on stdout.`
+        `Verify the upstream command emits a single JSON value on stdout.`,
     );
   }
 
@@ -112,18 +135,23 @@ export function makeObservation(command, result, manifest) {
   if (/command not found|not found/i.test(stderr) || exitCode === 127) {
     diag.push(
       `One of the commands does not exist. Available registry commands: ` +
-      manifest.tools.map((t) => t.slug).join(', ') +
-      `. Standard tools: jq, grep, sed, awk, xargs, head, wc, tr.`
+        manifest.tools.map((t) => t.slug).join(', ') +
+        `. Standard tools: jq, grep, sed, awk, xargs, head, wc, tr.`,
     );
   }
 
   // Suspicious stdout: starts with stray escape that suggests bad text-extraction
-  if (exitCode === 0 && stdout && tools.length &&
-      /^"[^"]*$/.test(stdout) && stdout.length < 30) {
+  if (
+    exitCode === 0 &&
+    stdout &&
+    tools.length &&
+    /^"[^"]*$/.test(stdout) &&
+    stdout.length < 30
+  ) {
     diag.push(
       `stdout looks malformed: an unclosed escaped quote ('${stdout.slice(0, 20)}') usually means ` +
-      `awk/cut/grep split the JSON on the wrong delimiter. Consider \`jq -r .<field>\` instead, ` +
-      `using the schema in tools_referenced to pick the right field.`
+        `awk/cut/grep split the JSON on the wrong delimiter. Consider \`jq -r .<field>\` instead, ` +
+        `using the schema in tools_referenced to pick the right field.`,
     );
   }
 
@@ -131,7 +159,7 @@ export function makeObservation(command, result, manifest) {
   if (exitCode === 0 && !stdout && tools.length) {
     diag.push(
       `Pipeline succeeded (exit 0) but produced no stdout. The post-processing likely filtered ` +
-      `everything out. Try running the registry tool alone first to see its raw output.`
+        `everything out. Try running the registry tool alone first to see its raw output.`,
     );
   }
 
@@ -150,20 +178,21 @@ export function makeObservation(command, result, manifest) {
  * Not a full bash parser — but covers the cases we've actually hit when small
  * models compose pipelines (`echo "a|b" | jq`, `cmd1 || cmd2`, `cmd \| cmd`).
  */
-export function lastPipelineStage(cmd) {
-  const stages = [];
+export function lastPipelineStage(cmd: string): string | null {
+  const stages: string[] = [];
   let current = '';
-  let inSingle = false, inDouble = false;
+  let inSingle = false;
+  let inDouble = false;
 
   for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
+    const c = cmd[i]!;
     const next = cmd[i + 1];
 
     if (c === '\\' && next === '|') { current += c + next; i++; continue; }
-    if (c === "'" && !inDouble)     { inSingle = !inSingle; current += c; continue; }
-    if (c === '"' && !inSingle)     { inDouble = !inDouble; current += c; continue; }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; current += c; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; current += c; continue; }
     if (c === '|' && !inSingle && !inDouble) {
-      if (next === '|') { current += c + next; i++; continue; }   // ||
+      if (next === '|') { current += c + next; i++; continue; } // ||
       stages.push(current.trim());
       current = '';
       continue;
@@ -174,11 +203,12 @@ export function lastPipelineStage(cmd) {
   return stages[stages.length - 1] ?? null;
 }
 
-function validateAgainstSchema(stdout, schema) {
+function validateAgainstSchema(stdout: string, schema: JSONSchema | undefined): SchemaCheck {
   if (!schema) return { validated: false, reason: 'no schema declared' };
-  let parsed;
-  try { parsed = JSON.parse(stdout); }
-  catch (e) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
     return {
       validated: false,
       ok: false,
@@ -186,55 +216,57 @@ function validateAgainstSchema(stdout, schema) {
     };
   }
   const errs = checkType(schema, parsed, '$');
-  return errs.length
-    ? { validated: true, ok: false, errors: errs }
-    : { validated: true, ok: true };
+  return errs.length ? { validated: true, ok: false, errors: errs } : { validated: true, ok: true };
 }
 
-function checkType(schema, data, path) {
-  const errs = [];
-  if (!schema || !schema.type) return errs;
+function checkType(schema: JSONSchema | undefined, data: unknown, path: string): string[] {
+  const errs: string[] = [];
+  if (!schema?.type) return errs;
   const actual = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
   if (actual !== schema.type) {
     errs.push(`${path}: expected ${schema.type}, got ${actual}`);
     return errs;
   }
   if (schema.type === 'object' && schema.properties) {
+    const obj = data as Record<string, unknown>;
     for (const [k, sub] of Object.entries(schema.properties)) {
-      if (data[k] !== undefined) errs.push(...checkType(sub, data[k], `${path}.${k}`));
+      if (obj[k] !== undefined) errs.push(...checkType(sub, obj[k], `${path}.${k}`));
     }
   }
   return errs;
 }
 
-function synthesizeExample(schema) {
+function synthesizeExample(schema: JSONSchema | undefined): unknown {
   if (!schema) return undefined;
   if (schema.type === 'object') {
-    const out = {};
-    for (const [k, sub] of Object.entries(schema.properties ?? {})) out[k] = synthesizeExample(sub);
+    const out: Record<string, unknown> = {};
+    for (const [k, sub] of Object.entries(schema.properties ?? {})) {
+      out[k] = synthesizeExample(sub);
+    }
     return out;
   }
   if (schema.type === 'array') return [synthesizeExample(schema.items)];
-  if (schema.type === 'string')  return schema.description ? `<${schema.description}>` : '<string>';
+  if (schema.type === 'string') return schema.description ? `<${schema.description}>` : '<string>';
   if (schema.type === 'integer' || schema.type === 'number') return 0;
   if (schema.type === 'boolean') return false;
   return null;
 }
 
-function formatSchemaShape(schema) {
+function formatSchemaShape(schema: JSONSchema | undefined): string {
   if (!schema) return '(no schema)';
   if (schema.type === 'object') {
     const fields = Object.entries(schema.properties ?? {})
-      .map(([k, sub]) => `${k}:${sub.type ?? '?'}`).join(', ');
+      .map(([k, sub]) => `${k}:${sub.type ?? '?'}`)
+      .join(', ');
     return `a flat object {${fields}}`;
   }
   return `a value of type ${schema.type}`;
 }
 
-function firstScalarField(schema) {
+function firstScalarField(schema: JSONSchema | undefined): string | null {
   if (schema?.type !== 'object') return null;
   for (const [k, sub] of Object.entries(schema.properties ?? {})) {
-    if (['string', 'number', 'integer', 'boolean'].includes(sub.type)) return k;
+    if (sub.type && ['string', 'number', 'integer', 'boolean'].includes(sub.type)) return k;
   }
   return null;
 }
@@ -243,10 +275,10 @@ function firstScalarField(schema) {
  * Walks an outputSchema and emits literal jq paths the agent can copy-paste.
  * Saves a small model from having to "compose" jq syntax it might get wrong.
  */
-function jqPathsFromSchema(schema, prefix = '') {
+function jqPathsFromSchema(schema: JSONSchema | undefined, prefix = ''): string[] {
   if (!schema) return [];
   if (schema.type === 'object') {
-    const out = [];
+    const out: string[] = [];
     for (const [k, sub] of Object.entries(schema.properties ?? {})) {
       const path = `${prefix}.${k}`;
       if (sub.type === 'object' || sub.type === 'array') out.push(...jqPathsFromSchema(sub, path));

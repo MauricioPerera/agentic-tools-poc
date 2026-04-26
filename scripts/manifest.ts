@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * manifest.mjs — emits dist/manifest.json: the single artefact a client needs
+ * manifest.ts — emits dist/manifest.json: the single artefact a client needs
  * to discover every available tool. Each entry references the bundled .mjs by
  * relative path so the same manifest works under jsDelivr, Pages, R2, etc.
  */
@@ -9,32 +9,36 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { execSync } from 'node:child_process';
+import type { Manifest, SkillDef } from '../types/index.ts';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SKILLS_DIR = join(ROOT, 'registry', 'skills');
 const DIST       = join(ROOT, 'dist');
 
-const sha = (() => {
-  try { return execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(); }
-  catch { return null; }
+const sha = ((): string | null => {
+  try {
+    return execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
+  } catch {
+    return null;
+  }
 })();
 
-const tools = [];
+const tools: SkillDef[] = [];
 for (const slug of readdirSync(SKILLS_DIR)) {
-  const meta = parseYaml(readFileSync(join(SKILLS_DIR, slug, 'tool.yaml'), 'utf8'));
+  const meta = parseYaml(readFileSync(join(SKILLS_DIR, slug, 'tool.yaml'), 'utf8')) as Partial<SkillDef>;
   const bundle = `skills/${slug}.mjs`;
   if (!existsSync(join(DIST, bundle))) {
     console.error(`! ${slug}: missing ${bundle} — run \`npm run build\` first`);
     process.exit(1);
   }
   tools.push({
-    slug:            meta.slug,
-    name:            meta.name,
-    summary:         meta.summary,
-    version:         meta.version,
+    slug:            meta.slug!,
+    name:            meta.name!,
+    summary:         meta.summary!,
+    version:         meta.version!,
     capabilities:    meta.capabilities ?? [],
     sideEffects:     meta.sideEffects ?? 'none',
-    inputSchema:     meta.inputSchema,
+    inputSchema:     meta.inputSchema!,
     outputSchema:    meta.outputSchema,
     requiredEnv:     meta.requiredEnv ?? [],
     networkPolicy:   meta.networkPolicy ?? { allow: [] },
@@ -43,7 +47,7 @@ for (const slug of readdirSync(SKILLS_DIR)) {
   });
 }
 
-const manifest = {
+const manifest: Manifest = {
   registryVersion: '1.0',
   generatedAt:     new Date().toISOString(),
   commit:          sha,

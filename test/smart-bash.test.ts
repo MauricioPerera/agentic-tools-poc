@@ -6,12 +6,16 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeObservation, lastPipelineStage } from '../client/smart-bash.mjs';
+import { makeObservation, lastPipelineStage } from '../client/smart-bash.ts';
+import type { Manifest } from '../types/index.ts';
 
+// Minimal manifest fixture — only the fields makeObservation actually inspects.
+// Cast through `as unknown as Manifest` because we omit registryVersion etc.
 const MANIFEST = {
   tools: [
     {
       slug: 'ip-info',
+      inputSchema: { type: 'object', properties: {} },
       outputSchema: {
         type: 'object',
         properties: {
@@ -22,6 +26,7 @@ const MANIFEST = {
     },
     {
       slug: 'echo-pretty',
+      inputSchema: { type: 'object', properties: {} },
       outputSchema: {
         type: 'object',
         properties: {
@@ -31,7 +36,7 @@ const MANIFEST = {
       },
     },
   ],
-};
+} as unknown as Manifest;
 
 // ---------------------------------------------------------------------------
 // Happy paths
@@ -69,7 +74,7 @@ test('makeObservation: pipeline ending in jq → schema_check explains the gap',
   );
   assert.ok(obs.schema_check);
   assert.equal(obs.schema_check.validated, false);
-  assert.match(obs.schema_check.reason, /transform|registry tool/i);
+  assert.match(obs.schema_check.reason ?? '', /transform|registry tool/i);
 });
 
 // ---------------------------------------------------------------------------
@@ -163,7 +168,8 @@ test('makeObservation: jq_paths reflect schema fields exactly', () => {
     { stdout: '{"ip":"x","country":"MX"}', stderr: '', exitCode: 0 },
     MANIFEST
   );
-  const paths = obs.tools_referenced[0].jq_paths;
+  assert.ok(obs.tools_referenced);
+  const paths = obs.tools_referenced[0]!.jq_paths;
   assert.deepEqual(paths, ['.ip', '.country']);
 });
 
@@ -176,6 +182,7 @@ test('makeObservation: schema_check catches non-JSON stdout from registry tool',
     { stdout: 'not json at all', stderr: '', exitCode: 0 },
     MANIFEST
   );
+  assert.ok(obs.schema_check);
   assert.equal(obs.schema_check.validated, false);
   assert.equal(obs.schema_check.ok, false);
 });
@@ -232,7 +239,8 @@ test('makeObservation: schema_check reports type mismatch errors', () => {
     { stdout: '{"ip":42,"country":"MX"}', stderr: '', exitCode: 0 },
     MANIFEST
   );
+  assert.ok(obs.schema_check);
   assert.equal(obs.schema_check.validated, true);
   assert.equal(obs.schema_check.ok, false);
-  assert.ok(obs.schema_check.errors.some((e) => /ip/.test(e) && /string/.test(e)));
+  assert.ok(obs.schema_check.errors?.some((e) => /ip/.test(e) && /string/.test(e)));
 });

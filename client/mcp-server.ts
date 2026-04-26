@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * mcp-server.mjs — stdio MCP server that exposes the registry as a single
+ * mcp-server.ts — stdio MCP server that exposes the registry as a single
  * `bash` tool plus a `tool_schema` introspection tool.
  *
  * The whole point: instead of giving the LLM N separate function-call tool
  * schemas (one per registry tool), give it ONE bash tool. The agent then
  * composes the registry tools through unix pipes (jq, grep, xargs, …) and
- * only the final pipeline output crosses back to the model. This is the
- * token-efficiency thesis the POC validates.
+ * only the final pipeline output crosses back to the model.
  *
  * Drop-in for Claude Code (~/.claude/mcp.json):
  *   {
  *     "mcpServers": {
  *       "agentic-tools": {
  *         "command": "node",
- *         "args": ["<absolute path>/client/mcp-server.mjs"]
+ *         "args": ["<absolute path>/client/mcp-server.ts"]
  *       }
  *     }
  *   }
@@ -26,15 +25,18 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { Bash } from 'just-bash';
-import { loadRegistry } from './loader.mjs';
+import { loadRegistry } from './loader.ts';
 
-const REGISTRY = process.env.REGISTRY; // optional override; loader has a sensible default
+const REGISTRY = process.env.REGISTRY;
 
-async function main() {
-  // 1. Load registry once at server startup. Cold start is amortized
-  //    across the entire MCP session so per-call latency is just bash + handler.
+interface CallToolParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+async function main(): Promise<void> {
   const { manifest, commands } = await loadRegistry({ registry: REGISTRY });
-  const bash = new Bash({ customCommands: commands });
+  const bash = new Bash({ customCommands: commands as never });
 
   const toolList = manifest.tools
     .map((t) => `  • ${t.slug} — ${t.summary}${t.networkPolicy?.allow?.length ? ' [net: ' + t.networkPolicy.allow.join(',') + ']' : ''}`)
@@ -42,7 +44,7 @@ async function main() {
 
   const server = new Server(
     { name: 'agentic-tools', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -84,28 +86,29 @@ async function main() {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const { name, arguments: args = {} } = req.params;
+    const { name, arguments: args = {} } = req.params as CallToolParams;
 
     if (name === 'bash') {
-      const cmd = String(args.command ?? '');
+      const cmd = String(args['command'] ?? '');
       if (!cmd) return errorResult('command is required');
       try {
         const result = await bash.exec(cmd);
         return {
           content: [
             { type: 'text', text: result.stdout || '(no stdout)' },
-            ...(result.stderr ? [{ type: 'text', text: `stderr:\n${result.stderr}` }] : []),
-            ...(result.exitCode !== 0 ? [{ type: 'text', text: `exitCode: ${result.exitCode}` }] : []),
+            ...(result.stderr ? [{ type: 'text' as const, text: `stderr:\n${result.stderr}` }] : []),
+            ...(result.exitCode !== 0 ? [{ type: 'text' as const, text: `exitCode: ${result.exitCode}` }] : []),
           ],
           isError: result.exitCode !== 0,
         };
-      } catch (e) {
-        return errorResult(`bash crashed: ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return errorResult(`bash crashed: ${msg}`);
       }
     }
 
     if (name === 'tool_schema') {
-      const slug = String(args.slug ?? '');
+      const slug = String(args['slug'] ?? '');
       const tool = manifest.tools.find((t) => t.slug === slug);
       if (!tool) return errorResult(`unknown tool: ${slug}`);
       const view = {
@@ -129,15 +132,16 @@ async function main() {
 
   // Note: stdout is reserved for the JSON-RPC protocol. Diagnostics → stderr.
   process.stderr.write(
-    `[agentic-tools mcp] ready — ${manifest.tools.length} registry tool(s) loaded\n`
+    `[agentic-tools mcp] ready — ${manifest.tools.length} registry tool(s) loaded\n`,
   );
 }
 
-function errorResult(msg) {
-  return { content: [{ type: 'text', text: msg }], isError: true };
+function errorResult(msg: string) {
+  return { content: [{ type: 'text' as const, text: msg }], isError: true };
 }
 
-main().catch((e) => {
-  process.stderr.write(`[agentic-tools mcp] fatal: ${e.message}\n${e.stack}\n`);
+main().catch((e: unknown) => {
+  const err = e as Error;
+  process.stderr.write(`[agentic-tools mcp] fatal: ${err.message}\n${err.stack ?? ''}\n`);
   process.exit(1);
 });

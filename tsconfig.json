@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "useUnknownInCatchVariables": true,
+    // Disabled for now — test fixtures inevitably index into arrays we just
+    // pushed into, and asserting `arr[0]!` after `assert.equal(arr.length, 1)`
+    // is noise. Source code is unaffected because we already use guards.
+
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+
+    "lib": ["ES2022", "DOM"],
+
+    "types": ["node"]
+  },
+  "include": [
+    "client/**/*.ts",
+    "scripts/**/*.ts",
+    "schema/**/*.ts",
+    "test/**/*.ts",
+    "types/**/*.ts",
+    "registry/skills/**/src/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

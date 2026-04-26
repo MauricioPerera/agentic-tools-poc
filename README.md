@@ -6,6 +6,11 @@ distributed via **jsDelivr** as a free global CDN, and executed by
 [**just-bash**](https://github.com/vercel-labs/just-bash) — Vercel's virtual
 bash environment for agents.
 
+Codebase: ~2400 LOC of strict TypeScript, runs natively on Node 22+ via
+type-stripping (no build step for execution). 91 unit tests via `node:test`.
+Zero runtime dependencies beyond `just-bash`, `@modelcontextprotocol/sdk`,
+and `yaml`.
+
 The premise: **agent capabilities are skills, not tools**. Skills are owned
 by the agent's author and carry not just the function but its context,
 per-model tuning, recovery patterns, and meta-knowledge. See
@@ -29,24 +34,31 @@ Pin a version: replace `@main` with `@v0.1.0` once tagged.
 ## Repo layout
 
 ```
+types/index.ts                shared TypeScript types (Skill, Manifest, Observation, …)
 registry/skills/<slug>/
-  tool.yaml         metadata + JSONSchema (input/output) for the skill
-  src/index.mjs     default export: async (input, ctx) => output
-  README.md         human + agent-facing docs (the context layer)
-schema/skill.schema.mjs   shared validator (CI linter + runtime)
+  tool.yaml                   metadata + JSONSchema (input/output) for the skill
+  src/index.ts                typed handler: SkillHandler<Input, Output>
+  README.md                   human + agent-facing docs (the context layer)
+schema/skill.schema.ts        shared validator (CI linter + runtime)
 scripts/
-  validate.mjs      lints every tool.yaml against SKILL_SCHEMA
-  build.mjs         esbuild-bundles each src/ → dist/skills/<slug>.mjs
-  manifest.mjs      emits dist/manifest.json
+  validate.ts                 lints every tool.yaml against SKILL_SCHEMA
+  build.ts                    esbuild-bundles each src/ → dist/skills/<slug>.mjs
+  manifest.ts                 emits dist/manifest.json
 client/
-  loader.mjs               fetches manifest, registers each skill as a just-bash command
-  smart-bash.mjs           recovery layer: enriched observations with schema + diagnostics
-  mcp-server.mjs           composable MCP server (one `bash` tool)
-  mcp-server-classic.mjs   classic MCP server (one tool per skill)
-  agent-granite.mjs        Workers AI agent loop driver
-  compare.mjs              A/B harness: composable vs classic, same queries
-  demo.mjs / test-mcp.mjs  bash + MCP integration tests
-dist/                      generated, committed, served by jsDelivr
+  arg-parser.ts                  argv↔input + tool_call.arguments parsers
+  loader.ts                      fetches manifest, registers each skill as a just-bash command
+  smart-bash.ts                  recovery layer: enriched observations with schema + diagnostics
+  skill-tuning.ts                applies per-model overrides + system_prompt_fragments
+  model-adapter.ts               normalizes Workers AI per-model response shapes
+  llms-txt-loader.ts             consumer of the proposed `## Skills` extension
+  mcp-server.ts                  composable MCP server (one `bash` tool)
+  mcp-server-classic.ts          classic MCP server (one tool per skill)
+  agent-granite.ts               Workers AI agent loop driver
+  compare.ts                     A/B harness: composable vs classic, same queries
+  demo.ts / test-mcp.ts          bash + MCP integration tests
+test/*.test.ts                   91 unit tests (node:test, no extra deps)
+dist/                            generated, committed, served by jsDelivr
+tsconfig.json                    strict TS, NodeNext, allowImportingTsExtensions
 ```
 
 ## Local commands

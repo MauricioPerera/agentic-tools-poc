@@ -1,1 +1,1 @@
-async function o(r,t){let e=String(r.text??"");return r.upper&&(e=e.toUpperCase()),r.lower&&(e=e.toLowerCase()),r.prefix&&(e=r.prefix+e),t.log(`echo-pretty: produced ${e.length} chars`),{text:e,length:e.length}}export{o as default};
+var l=async(t,r)=>{let e=String(t.text??"");return t.upper&&(e=e.toUpperCase()),t.lower&&(e=e.toLowerCase()),t.prefix&&(e=t.prefix+e),r.log(`echo-pretty: produced ${e.length} chars`),{text:e,length:e.length}},n=l;export{n as default};

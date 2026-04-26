@@ -1,5 +1,5 @@
 /**
- * llms-txt-loader.mjs — first independent consumer of the proposed `## Skills`
+ * llms-txt-loader.ts — first independent consumer of the proposed `## Skills`
  * extension to the llms.txt spec.
  *
  *   RFC:    https://img.automators.work/docs/rfc-skills-in-llms-txt.md
@@ -14,21 +14,28 @@
  * It returns descriptors; the caller decides what to do (per RFC §2.3 step 5,
  * agents must require explicit user opt-in before activation).
  */
-
 import { parse as parseYaml } from 'yaml';
 import { createHash } from 'node:crypto';
+import type {
+  DiscoveredSkill,
+  DomainSkillsResult,
+  SkillEntry,
+  SkillEntryMetadata,
+} from '../types/index.ts';
+
+interface LoadOptions {
+  signal?: AbortSignal;
+  log?: (msg: string) => void;
+}
 
 /**
  * Discover skills published by a domain via the proposed `## Skills` section.
- *
- * @param {string} domain  Origin URL, e.g. "https://img.automators.work"
- * @param {object} [opts]
- * @param {AbortSignal} [opts.signal]   Cancellation
- * @param {(msg: string) => void} [opts.log]
- * @returns {Promise<{ domain: string, llms_txt_url: string, skills: Skill[] }>}
  */
-export async function loadDomainSkills(domain, opts = {}) {
-  const log  = opts.log ?? (() => {});
+export async function loadDomainSkills(
+  domain: string,
+  opts: LoadOptions = {},
+): Promise<DomainSkillsResult> {
+  const log = opts.log ?? (() => {});
   const base = String(domain).replace(/\/+$/, '');
   if (!/^https?:\/\//.test(base)) throw new Error('domain must be an absolute http(s) URL');
 
@@ -39,7 +46,7 @@ export async function loadDomainSkills(domain, opts = {}) {
   const entries = parseSkillsSection(llmsText);
   log(`Found ${entries.length} skill entr${entries.length === 1 ? 'y' : 'ies'} in ## Skills`);
 
-  const skills = [];
+  const skills: DiscoveredSkill[] = [];
   for (const entry of entries) {
     const url = absolutize(entry.url, base);
 
@@ -51,11 +58,12 @@ export async function loadDomainSkills(domain, opts = {}) {
     }
 
     log(`  GET ${url}`);
-    let skillText;
+    let skillText: string;
     try {
       skillText = await fetchText(url, opts.signal);
-    } catch (e) {
-      log(`  FAIL ${entry.title}: ${e.message}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`  FAIL ${entry.title}: ${msg}`);
       continue;
     }
 
@@ -63,7 +71,7 @@ export async function loadDomainSkills(domain, opts = {}) {
     if (entry.metadata?.sha256) {
       const actual = sha256Hex(skillText);
       if (actual !== entry.metadata.sha256) {
-        log(`  FAIL ${entry.title}: sha256 mismatch (declared ${entry.metadata.sha256.slice(0,12)}…, actual ${actual.slice(0,12)}…)`);
+        log(`  FAIL ${entry.title}: sha256 mismatch (declared ${entry.metadata.sha256.slice(0, 12)}…, actual ${actual.slice(0, 12)}…)`);
         continue;
       }
     }
@@ -72,18 +80,18 @@ export async function loadDomainSkills(domain, opts = {}) {
 
     skills.push({
       // Identifying fields — name from frontmatter wins, fall back to llms.txt title
-      name:        frontmatter.name ?? entry.title,
-      description: frontmatter.description ?? entry.description,
-      version:     frontmatter.version ?? entry.metadata?.version ?? null,
-      license:     frontmatter.license ?? entry.metadata?.license ?? null,
-      homepage:    frontmatter.homepage ?? null,
+      name: (frontmatter.name as string | undefined) ?? entry.title,
+      description: (frontmatter.description as string | undefined) ?? entry.description,
+      version: (frontmatter.version as string | undefined) ?? entry.metadata?.version ?? null,
+      license: (frontmatter.license as string | undefined) ?? entry.metadata?.license ?? null,
+      homepage: (frontmatter.homepage as string | undefined) ?? null,
 
       // Provenance
       source_domain: base,
-      llms_txt_url:  llmsUrl,
-      skill_url:     url,
-      sha256:        entry.metadata?.sha256 ?? null,
-      verified:      Boolean(entry.metadata?.sha256), // sha256 was checked if present
+      llms_txt_url: llmsUrl,
+      skill_url: url,
+      sha256: entry.metadata?.sha256 ?? null,
+      verified: Boolean(entry.metadata?.sha256),
 
       // Full payload — caller decides how to use
       llms_txt_metadata: entry.metadata,
@@ -104,35 +112,36 @@ export async function loadDomainSkills(domain, opts = {}) {
  * Section heading match is case-insensitive ("## Skills", "## skills", …).
  * Stops at the next heading of equal or higher rank.
  */
-export function parseSkillsSection(text) {
-  // Find the heading line, then capture until the next ## or # heading
+export function parseSkillsSection(text: string): SkillEntry[] {
   const headingRe = /^##\s+skills\s*$/im;
   const headingMatch = text.match(headingRe);
-  if (!headingMatch) return [];
+  if (!headingMatch?.index && headingMatch?.index !== 0) return [];
 
-  const start = headingMatch.index + headingMatch[0].length;
-  const rest  = text.slice(start);
+  const start = headingMatch.index! + headingMatch[0].length;
+  const rest = text.slice(start);
   const nextHeading = rest.match(/^#{1,2}\s+\S/m);
-  const section = nextHeading ? rest.slice(0, nextHeading.index) : rest;
+  const section = nextHeading?.index !== undefined ? rest.slice(0, nextHeading.index) : rest;
 
   // Each entry: - [title](url): description [optional <!-- skill: {...} -->]
-  const entries = [];
-  const lineRe  = /^\s*-\s+\[([^\]]+)\]\(([^)]+)\)\s*:?\s*(.*)$/gm;
-  let m;
+  const entries: SkillEntry[] = [];
+  const lineRe = /^\s*-\s+\[([^\]]+)\]\(([^)]+)\)\s*:?\s*(.*)$/gm;
+  let m: RegExpExecArray | null;
   while ((m = lineRe.exec(section)) !== null) {
-    let [, title, url, tail] = m;
-    let metadata = {};
+    const title = m[1]!;
+    const url = m[2]!;
+    let tail = m[3] ?? '';
+    let metadata: SkillEntryMetadata = {};
 
     // Pull off optional trailing HTML metadata comment
     const metaMatch = tail.match(/<!--\s*skill:\s*(\{[\s\S]*?\})\s*-->/);
-    if (metaMatch) {
-      try { metadata = JSON.parse(metaMatch[1]); } catch { /* ignore malformed */ }
-      tail = tail.slice(0, metaMatch.index).trim();
+    if (metaMatch?.[1]) {
+      try { metadata = JSON.parse(metaMatch[1]) as SkillEntryMetadata; } catch { /* ignore malformed */ }
+      tail = tail.slice(0, metaMatch.index!).trim();
     }
 
     entries.push({
-      title:       title.trim(),
-      url:         url.trim(),
+      title: title.trim(),
+      url: url.trim(),
       description: tail.replace(/[:\s]+$/, '').trim(),
       metadata,
     });
@@ -144,28 +153,32 @@ export function parseSkillsSection(text) {
  * Split an Anthropic-style SKILL.md into YAML frontmatter + body.
  * If no frontmatter delimiter is found, body is the whole file.
  */
-export function parseSkillFile(text) {
+export function parseSkillFile(text: string): { frontmatter: Record<string, unknown>; body: string } {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { frontmatter: {}, body: text };
-  let frontmatter = {};
-  try { frontmatter = parseYaml(m[1]) ?? {}; } catch { /* tolerate malformed */ }
+  let frontmatter: Record<string, unknown> = {};
+  try {
+    frontmatter = (parseYaml(m[1] ?? '') as Record<string, unknown>) ?? {};
+  } catch {
+    /* tolerate malformed */
+  }
   return { frontmatter, body: m[2] ?? '' };
 }
 
 // ---------------------------------------------------------------------------
 // helpers
 
-async function fetchText(url, signal) {
+async function fetchText(url: string, signal: AbortSignal | undefined): Promise<string> {
   const r = await fetch(url, { signal });
   if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`);
   return r.text();
 }
 
-function absolutize(maybeRelative, base) {
+function absolutize(maybeRelative: string, base: string): string {
   if (/^https?:\/\//.test(maybeRelative)) return maybeRelative;
   return new URL(maybeRelative, base + '/').toString();
 }
 
-function sha256Hex(text) {
+function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }

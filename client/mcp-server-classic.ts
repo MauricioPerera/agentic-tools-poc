@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 /**
- * mcp-server-classic.mjs — the "traditional" MCP server: one MCP tool per
+ * mcp-server-classic.ts — the "traditional" MCP server: one MCP tool per
  * registry tool, each with its own JSONSchema. Counterpart to the composable
- * mcp-server.mjs (single `bash` tool).
+ * mcp-server.ts (single `bash` tool).
  *
  * Same registry, same execution path (under the hood we still shell out to
  * just-bash so behaviour is identical), but the MCP host sees N tool schemas
  * instead of 1. This is what conventional function-calling agents see.
  *
- * Use both servers side-by-side in Claude Code or any MCP host to compare
- * round count, token usage, and convergence behaviour for the same tasks.
- *
  *   {
  *     "mcpServers": {
  *       "agentic-tools-classic": {
  *         "command": "node",
- *         "args": ["<absolute path>/client/mcp-server-classic.mjs"]
+ *         "args": ["<absolute path>/client/mcp-server-classic.ts"]
  *       }
  *     }
  *   }
@@ -27,23 +24,27 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { Bash } from 'just-bash';
-import { loadRegistry } from './loader.mjs';
-import { applyOverridesToManifest } from './skill-tuning.mjs';
-import { inputToArgv, argvToShellCommand } from './arg-parser.mjs';
+import { loadRegistry } from './loader.ts';
+import { applyOverridesToManifest } from './skill-tuning.ts';
+import { inputToArgv, argvToShellCommand } from './arg-parser.ts';
 
 const REGISTRY = process.env.REGISTRY;
 const MODEL    = process.env.MODEL ?? '';
 
-async function main() {
+interface CallToolParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+async function main(): Promise<void> {
   const { manifest: rawManifest, commands } = await loadRegistry({ registry: REGISTRY });
   // Apply per-model skill overrides if MODEL env identifies a target model.
-  // E.g. MODEL=hermes spawns a Hermes-tuned variant of the same registry.
   const manifest = applyOverridesToManifest(rawManifest, MODEL);
-  const bash = new Bash({ customCommands: commands });
+  const bash = new Bash({ customCommands: commands as never });
 
   const server = new Server(
     { name: 'agentic-tools-classic', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -55,42 +56,43 @@ async function main() {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const { name, arguments: args = {} } = req.params;
+    const { name, arguments: args = {} } = req.params as CallToolParams;
     const tool = manifest.tools.find((t) => t.slug === name);
     if (!tool) return errorResult(`unknown tool: ${name}`);
 
     // Build the equivalent bash command: tool --k v --k2 v2 ...
-    // Reuses the exact same execution path as the composable server, so
-    // any difference in agent behaviour is purely about tool surface, not
-    // about runtime semantics.
     const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
     try {
       const result = await bash.exec(cmd);
       return {
         content: [
-          { type: 'text', text: (result.stdout || '').trim() || '(no stdout)' },
-          ...(result.stderr ? [{ type: 'text', text: `stderr:\n${result.stderr.trim()}` }] : []),
+          { type: 'text' as const, text: (result.stdout ?? '').trim() || '(no stdout)' },
+          ...(result.stderr ? [{ type: 'text' as const, text: `stderr:\n${result.stderr.trim()}` }] : []),
         ],
         isError: result.exitCode !== 0,
       };
-    } catch (e) {
-      return errorResult(`crashed: ${e.message}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return errorResult(`crashed: ${msg}`);
     }
   });
 
   await server.connect(new StdioServerTransport());
-  const tunedTools = manifest.tools.filter((t) => rawManifest.tools.find((r) => r.slug === t.slug && JSON.stringify(r) !== JSON.stringify(t))).map((t) => t.slug);
+  const tunedTools = manifest.tools
+    .filter((t) => rawManifest.tools.find((r) => r.slug === t.slug && JSON.stringify(r) !== JSON.stringify(t)))
+    .map((t) => t.slug);
   process.stderr.write(
     `[agentic-tools-classic mcp] ready — ${manifest.tools.length} skill(s) exposed individually` +
-    (MODEL ? ` (MODEL=${MODEL}, tuned: ${tunedTools.length ? tunedTools.join(',') : 'none'})` : '') + '\n'
+      (MODEL ? ` (MODEL=${MODEL}, tuned: ${tunedTools.length ? tunedTools.join(',') : 'none'})` : '') + '\n',
   );
 }
 
-function errorResult(msg) {
-  return { content: [{ type: 'text', text: msg }], isError: true };
+function errorResult(msg: string) {
+  return { content: [{ type: 'text' as const, text: msg }], isError: true };
 }
 
-main().catch((e) => {
-  process.stderr.write(`[agentic-tools-classic mcp] fatal: ${e.message}\n${e.stack}\n`);
+main().catch((e: unknown) => {
+  const err = e as Error;
+  process.stderr.write(`[agentic-tools-classic mcp] fatal: ${err.message}\n${err.stack ?? ''}\n`);
   process.exit(1);
 });

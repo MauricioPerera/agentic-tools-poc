@@ -1,8 +1,9 @@
-// Schema for tool.yaml — used both by the CI linter (validate.mjs)
+// Schema for tool.yaml — used both by the CI linter (validate.ts)
 // and (in a future iteration) by the runtime registry. Keeping it
 // vanilla-JSONSchema-shaped so the same definition can travel.
+import type { JSONSchema } from '../types/index.ts';
 
-export const SKILL_SCHEMA = {
+export const SKILL_SCHEMA: JSONSchema = {
   type: 'object',
   required: ['slug', 'name', 'summary', 'version', 'inputSchema'],
   additionalProperties: true,
@@ -19,21 +20,24 @@ export const SKILL_SCHEMA = {
     requiredEnv:  { type: 'array', items: { type: 'string' } },
     networkPolicy:{
       type: 'object',
-      properties: { allow: { type: 'array', items: { type: 'string' } } }
+      properties: { allow: { type: 'array', items: { type: 'string' } } },
     },
     // Per-model overrides. Keys are model-name substrings (case-insensitive),
     // values are partial skill definitions that replace the matching fields.
-    // Only summary, description, and inputSchema are overridable for now.
+    // OVERRIDABLE_FIELDS in skill-tuning.ts decides which keys take effect.
     model_overrides: {
       type: 'object',
     },
-  }
+  },
 };
 
-// Tiny inline JSONSchema validator (dependency-free, just enough for the linter).
-// Returns array of error strings; empty array == valid.
-export function validate(schema, data, path = '$') {
-  const errs = [];
+/**
+ * Tiny inline JSONSchema validator (dependency-free, just enough for the linter).
+ * Returns array of error strings; empty array == valid.
+ */
+export function validate(schema: JSONSchema, data: unknown, path = '$'): string[] {
+  const errs: string[] = [];
+
   if (schema.type) {
     const actual = Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data;
     if (actual !== schema.type) {
@@ -41,27 +45,34 @@ export function validate(schema, data, path = '$') {
       return errs;
     }
   }
+
   if (schema.type === 'object') {
-    for (const k of schema.required || []) {
-      if (!(k in (data || {}))) errs.push(`${path}.${k}: missing required field`);
+    const obj = (data ?? {}) as Record<string, unknown>;
+    for (const k of schema.required ?? []) {
+      if (!(k in obj)) errs.push(`${path}.${k}: missing required field`);
     }
-    for (const [k, v] of Object.entries(data || {})) {
+    for (const [k, v] of Object.entries(obj)) {
       const sub = schema.properties?.[k];
       if (sub) errs.push(...validate(sub, v, `${path}.${k}`));
     }
   }
+
   if (schema.type === 'array' && schema.items) {
-    (data || []).forEach((v, i) => errs.push(...validate(schema.items, v, `${path}[${i}]`)));
+    const arr = (data ?? []) as unknown[];
+    arr.forEach((v, i) => errs.push(...validate(schema.items!, v, `${path}[${i}]`)));
   }
+
   if (schema.type === 'string') {
-    if (schema.minLength != null && data.length < schema.minLength)
+    const s = data as string;
+    if (schema.minLength != null && s.length < schema.minLength)
       errs.push(`${path}: shorter than minLength ${schema.minLength}`);
-    if (schema.maxLength != null && data.length > schema.maxLength)
+    if (schema.maxLength != null && s.length > schema.maxLength)
       errs.push(`${path}: longer than maxLength ${schema.maxLength}`);
-    if (schema.pattern && !new RegExp(schema.pattern).test(data))
+    if (schema.pattern && !new RegExp(schema.pattern).test(s))
       errs.push(`${path}: does not match /${schema.pattern}/`);
-    if (schema.enum && !schema.enum.includes(data))
+    if (schema.enum && !schema.enum.includes(s))
       errs.push(`${path}: not in enum [${schema.enum.join(', ')}]`);
   }
+
   return errs;
 }

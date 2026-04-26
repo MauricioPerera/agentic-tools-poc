@@ -1,5 +1,5 @@
 /**
- * arg-parser.mjs — the two argument parsers used across the project,
+ * arg-parser.ts — the two argument parsers used across the project,
  * consolidated into one module with clear, distinct names.
  *
  * Why two parsers exist:
@@ -15,24 +15,27 @@
  * Same goal (`{key: value}` object), totally different inputs. Keeping them
  * in one module makes the duality visible.
  */
+import type { JSONSchema } from '../types/index.ts';
+
+export type CoercedValue = string | number | boolean | undefined;
+export type ParsedInput = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
-// Parser #1 — argv → input (used by client/loader.mjs inside the bash shell)
+// Parser #1 — argv → input (used by client/loader.ts inside the bash shell)
 
 /**
  * Parses argv + stdin into an `input` object that conforms to the JSONSchema.
  * Tiny but functional: --flag, --key=val, --key val, default coercion, and
  * stdin read into the first unfilled string field if no --flag supplied it.
- *
- * @param {string[]} args      argv tokens (no program name)
- * @param {string}   stdin     piped stdin content (may be empty)
- * @param {object}   schema    JSONSchema describing the input shape
- * @returns {object}           parsed input object
  */
-export function parseArgvAgainstSchema(args, stdin, schema) {
+export function parseArgvAgainstSchema(
+  args: string[],
+  stdin: string,
+  schema: JSONSchema | undefined,
+): ParsedInput {
   const props = schema?.properties ?? {};
   const required = new Set(schema?.required ?? []);
-  const out = {};
+  const out: ParsedInput = {};
 
   // Apply defaults from the schema first
   for (const [k, def] of Object.entries(props)) {
@@ -41,14 +44,22 @@ export function parseArgvAgainstSchema(args, stdin, schema) {
 
   // Walk argv, mapping --flag → out
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+    const a = args[i]!;
     if (!a.startsWith('--')) continue;
-    let key, val;
+    let key: string;
+    let val: string | boolean;
     if (a.includes('=')) {
-      [key, val] = [a.slice(2, a.indexOf('=')), a.slice(a.indexOf('=') + 1)];
+      key = a.slice(2, a.indexOf('='));
+      val = a.slice(a.indexOf('=') + 1);
     } else {
       key = a.slice(2);
-      val = (i + 1 < args.length && !args[i + 1].startsWith('--')) ? args[++i] : true;
+      const next = args[i + 1];
+      if (i + 1 < args.length && next !== undefined && !next.startsWith('--')) {
+        val = next;
+        i++;
+      } else {
+        val = true;
+      }
     }
     const coerced = coerceArgvValue(val, props[key]?.type);
     if (coerced !== undefined) out[key] = coerced;
@@ -57,8 +68,8 @@ export function parseArgvAgainstSchema(args, stdin, schema) {
   // Stdin → first string field that is still undefined. Skips fields that
   // already have a value (set via argv or via a default in the schema).
   if (stdin && stdin.length > 0) {
-    const stdinTarget = Object.keys(props).find((k) =>
-      props[k].type === 'string' && out[k] === undefined
+    const stdinTarget = Object.keys(props).find(
+      (k) => props[k]?.type === 'string' && out[k] === undefined,
     );
     if (stdinTarget) out[stdinTarget] = stdin.replace(/\n+$/, '');
   }
@@ -77,14 +88,10 @@ export function parseArgvAgainstSchema(args, stdin, schema) {
  * flag with no value" — we return undefined so the missing-required check
  * upstream can surface a clear error, instead of silently sending the
  * literal string "true" to the handler.
- *
- * @param {string|boolean} val   raw token from argv (or `true` for bare flags)
- * @param {string|undefined} type  JSONSchema type the field expects
- * @returns {string|number|boolean|undefined}  coerced value, or undefined to skip
  */
-export function coerceArgvValue(val, type) {
-  if (type === 'boolean')              return val === 'true' || val === true;
-  if (val === true || val === false)   return undefined;     // bare flag on non-boolean field
+export function coerceArgvValue(val: string | boolean, type: JSONSchema['type']): CoercedValue {
+  if (type === 'boolean') return val === 'true' || val === true;
+  if (val === true || val === false) return undefined; // bare flag on non-boolean field
   if (type === 'integer' || type === 'number') {
     const n = Number(val);
     return Number.isFinite(n) ? n : undefined;
@@ -93,7 +100,7 @@ export function coerceArgvValue(val, type) {
 }
 
 // ---------------------------------------------------------------------------
-// Parser #2 — model tool_calls → input (used by client/compare.mjs and agents)
+// Parser #2 — model tool_calls → input (used by client/compare.ts and agents)
 
 /**
  * Parses a `tool_calls[].function.arguments` payload from a model.
@@ -105,19 +112,16 @@ export function coerceArgvValue(val, type) {
  *
  * This function handles all three by trying to parse twice if the first
  * parse yielded another string.
- *
- * @param {string|object|null|undefined} raw  the arguments payload
- * @returns {object}  parsed input, or `{}` on failure (caller decides what to do)
  */
-export function parseToolCallArguments(raw) {
+export function parseToolCallArguments(raw: unknown): ParsedInput {
   if (raw == null) return {};
-  if (typeof raw !== 'string') return raw;
+  if (typeof raw !== 'string') return raw as ParsedInput;
   try {
-    const once = JSON.parse(raw);
+    const once: unknown = JSON.parse(raw);
     if (typeof once === 'string') {
-      try { return JSON.parse(once); } catch { return {}; }
+      try { return JSON.parse(once) as ParsedInput; } catch { return {}; }
     }
-    return once ?? {};
+    return (once ?? {}) as ParsedInput;
   } catch {
     return {};
   }
@@ -135,15 +139,12 @@ export function parseToolCallArguments(raw) {
  * Use this when you control the next consumer programmatically. For a bash
  * command line, pipe through `argvToShellCommand` to add the appropriate
  * quoting.
- *
- * @param {object} args   input object (key-value pairs)
- * @returns {string[]}    argv tokens, ready to feed parseArgvAgainstSchema
  */
-export function inputToArgv(args) {
-  const out = [];
+export function inputToArgv(args: Record<string, unknown> | null | undefined): string[] {
+  const out: string[] = [];
   for (const [k, v] of Object.entries(args ?? {})) {
     if (v === false || v == null) continue;
-    if (v === true)               { out.push(`--${k}`); continue; }
+    if (v === true) { out.push(`--${k}`); continue; }
     out.push(`--${k}`, String(v));
   }
   return out;
@@ -151,17 +152,14 @@ export function inputToArgv(args) {
 
 /**
  * Join an argv array into a single bash command string with shell quoting.
- * Used by mcp-server-classic.mjs to convert a structured tool call into
+ * Used by mcp-server-classic.ts to convert a structured tool call into
  * the equivalent bash invocation that the registry tool exposes.
- *
- * @param {string[]} argv
- * @returns {string}
  */
-export function argvToShellCommand(argv) {
+export function argvToShellCommand(argv: string[]): string {
   return argv.map(shellQuote).join(' ');
 }
 
-function shellQuote(token) {
+function shellQuote(token: string): string {
   if (token === '' || /[\s"'`$\\|&;()<>*?{}[\]!#~]/.test(token)) {
     // Use double quotes and escape only `"`, `\`, `$`, and backtick.
     return `"${token.replace(/(["\\`$])/g, '\\$1')}"`;

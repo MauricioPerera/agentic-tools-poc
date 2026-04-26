@@ -14,7 +14,8 @@ import {
   parseToolCallArguments,
   inputToArgv,
   argvToShellCommand,
-} from '../client/arg-parser.mjs';
+} from '../client/arg-parser.ts';
+import type { JSONSchema } from '../types/index.ts';
 
 // ---------------------------------------------------------------------------
 // parseToolCallArguments
@@ -113,7 +114,7 @@ test('argvToShellCommand: bare flags pass through unchanged', () => {
 // Roundtrip: input → argv → input should be lossless for typical shapes
 
 test('roundtrip: input → inputToArgv → parseArgvAgainstSchema yields original', () => {
-  const schema = {
+  const schema: JSONSchema = {
     type: 'object',
     required: ['text'],
     properties: {
@@ -129,7 +130,7 @@ test('roundtrip: input → inputToArgv → parseArgvAgainstSchema yields origina
 });
 
 test('roundtrip: number coercion survives the loop', () => {
-  const schema = {
+  const schema: JSONSchema = {
     type: 'object',
     required: ['n'],
     properties: { n: { type: 'integer' } },
@@ -144,6 +145,6 @@ test('roundtrip: number coercion survives the loop', () => {
 // coerceArgvValue is also re-exported here — sanity check it's the same fn
 
 test('coerceArgvValue exported here matches loader.coerce behaviour', async () => {
-  const { coerce } = await import('../client/loader.mjs');
+  const { coerce } = await import('../client/loader.ts');
   assert.equal(coerce, coerceArgvValue);
 });

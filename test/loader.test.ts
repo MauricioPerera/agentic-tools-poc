@@ -13,9 +13,10 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, coerce } from '../client/loader.mjs';
+import { parseArgs, coerce } from '../client/loader.ts';
+import type { JSONSchema } from '../types/index.ts';
 
-const STR_SCHEMA = {
+const STR_SCHEMA: JSONSchema = {
   type: 'object',
   required: ['text'],
   properties: {
@@ -25,7 +26,7 @@ const STR_SCHEMA = {
   },
 };
 
-const IP_SCHEMA = {
+const IP_SCHEMA: JSONSchema = {
   type: 'object',
   properties: { ip: { type: 'string' } },
 };
@@ -65,7 +66,9 @@ test('coerce: invalid numeric returns undefined, not NaN', () => {
 test('coerce: defaults to string', () => {
   assert.equal(coerce('hello', 'string'),    'hello');
   assert.equal(coerce('hello', undefined),    'hello');
-  assert.equal(coerce(123,     undefined),    '123');
+  // Numeric input would arrive as a string from argv — verify the coercion
+  // path produces a string.
+  assert.equal(coerce('123',   undefined),    '123');
 });
 
 // ---------------------------------------------------------------------------
@@ -187,6 +190,6 @@ test('parseArgs: boolean flag with explicit value', () => {
 });
 
 test('parseArgs: number coercion through full call', () => {
-  const schema = { type: 'object', required: ['n'], properties: { n: { type: 'integer' } } };
+  const schema: JSONSchema = { type: 'object', required: ['n'], properties: { n: { type: 'integer' } } };
   assert.deepEqual(parseArgs(['--n', '42'], '', schema), { n: 42 });
 });

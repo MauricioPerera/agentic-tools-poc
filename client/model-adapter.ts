@@ -1,5 +1,5 @@
 /**
- * model-adapter.mjs — normalizes per-model response shapes for Workers AI.
+ * model-adapter.ts — normalizes per-model response shapes for Workers AI.
  *
  * Different models on the same Workers AI endpoint return different shapes:
  *
@@ -16,13 +16,39 @@
  * normalizeReply() returns a consistent shape; estimateTokens() provides a
  * rough char-based fallback when the model lies about counts.
  */
+import type { ChatMessage, NormalizedReply, ToolCall, UsageStats } from '../types/index.ts';
 
 const HERMES_RE = /hermes/i;
 
-export function normalizeReply(raw, model) {
+/** Shape of an OpenAI-style raw reply (Granite, Gemma, etc.). */
+interface OpenAIStyleReply {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: {
+      content?: string | null;
+      tool_calls?: ToolCall[];
+    };
+  }>;
+  usage?: UsageStats;
+}
+
+/** Shape of the legacy Workers AI reply (Hermes). */
+interface HermesStyleReply {
+  response?: string | null;
+  tool_calls?: Array<{
+    name: string;
+    arguments: unknown; // Hermes returns this as a parsed object
+  }>;
+  usage?: UsageStats;
+}
+
+type RawReply = OpenAIStyleReply | HermesStyleReply;
+
+export function normalizeReply(raw: RawReply, model: string): NormalizedReply {
   if (HERMES_RE.test(model)) {
-    const tcs = (raw.tool_calls ?? []).map((tc, i) => ({
-      id:   `hermes-${Date.now()}-${i}`,
+    const r = raw as HermesStyleReply;
+    const tcs: ToolCall[] = (r.tool_calls ?? []).map((tc, i) => ({
+      id: `hermes-${Date.now()}-${i}`,
       type: 'function',
       function: {
         name: tc.name,
@@ -32,23 +58,24 @@ export function normalizeReply(raw, model) {
       },
     }));
     return {
-      content: raw.response ?? '',
+      content: r.response ?? '',
       tool_calls: tcs,
       finish_reason: tcs.length ? 'tool_calls' : 'stop',
-      usage: raw.usage ?? null,
+      usage: r.usage ?? null,
       reportedTokens: 0, // Hermes returns zeros — caller should estimate
     };
   }
 
   // Granite / OpenAI-style
-  const choice = raw.choices?.[0] ?? {};
+  const r = raw as OpenAIStyleReply;
+  const choice = r.choices?.[0] ?? {};
   const msg = choice.message ?? {};
   return {
     content: msg.content ?? '',
     tool_calls: msg.tool_calls ?? [],
     finish_reason: choice.finish_reason ?? 'stop',
-    usage: raw.usage ?? null,
-    reportedTokens: raw.usage?.total_tokens ?? 0,
+    usage: r.usage ?? null,
+    reportedTokens: r.usage?.total_tokens ?? 0,
   };
 }
 
@@ -56,7 +83,7 @@ export function normalizeReply(raw, model) {
  * Hermes returns zeroed usage in beta; estimate via the well-known
  * heuristic ≈ chars/4. Used for cross-model token comparisons.
  */
-export function estimateTokens(messages, tools = []) {
+export function estimateTokens(messages: ChatMessage[], tools: unknown[] = []): number {
   const text =
     messages.map((m) => {
       let s = (m.role ?? '') + ' ' + (m.content ?? '');
@@ -72,7 +99,11 @@ export function estimateTokens(messages, tools = []) {
  * Returns the best available token count: model-reported when non-zero,
  * otherwise our estimate. Always returns a positive integer.
  */
-export function tokensUsed(reply, requestMessages, requestTools) {
+export function tokensUsed(
+  reply: NormalizedReply,
+  requestMessages: ChatMessage[],
+  requestTools: unknown[],
+): number {
   if (reply.reportedTokens > 0) return reply.reportedTokens;
   return estimateTokens(requestMessages, requestTools);
 }

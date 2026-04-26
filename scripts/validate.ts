@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * validate.mjs — lints every registry/skills/<slug>/tool.yaml against SKILL_SCHEMA.
+ * validate.ts — lints every registry/skills/<slug>/tool.yaml against SKILL_SCHEMA.
  * Exits non-zero on any error so CI blocks bad PRs.
  */
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
-import { SKILL_SCHEMA, validate } from '../schema/skill.schema.mjs';
+import { SKILL_SCHEMA, validate } from '../schema/skill.schema.ts';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const SKILLS_DIR = join(ROOT, 'registry', 'skills');
@@ -18,15 +18,25 @@ const slugs = readdirSync(SKILLS_DIR);
 for (const slug of slugs) {
   const dir = join(SKILLS_DIR, slug);
   const yamlPath = join(dir, 'tool.yaml');
-  const srcPath  = join(dir, 'src', 'index.mjs');
+  // Accept either index.mjs (legacy) or index.ts (post-migration) as the handler.
+  const srcMjs = join(dir, 'src', 'index.mjs');
+  const srcTs  = join(dir, 'src', 'index.ts');
 
-  if (!existsSync(yamlPath)) { console.error(`✗ ${slug}: missing tool.yaml`); errors++; continue; }
-  if (!existsSync(srcPath))  { console.error(`✗ ${slug}: missing src/index.mjs`); errors++; continue; }
+  if (!existsSync(yamlPath)) {
+    console.error(`✗ ${slug}: missing tool.yaml`);
+    errors++;
+    continue;
+  }
+  if (!existsSync(srcMjs) && !existsSync(srcTs)) {
+    console.error(`✗ ${slug}: missing src/index.mjs or src/index.ts`);
+    errors++;
+    continue;
+  }
 
-  const meta = parseYaml(readFileSync(yamlPath, 'utf8'));
+  const meta = parseYaml(readFileSync(yamlPath, 'utf8')) as Record<string, unknown>;
 
   if (meta.slug !== slug) {
-    console.error(`✗ ${slug}: tool.yaml.slug "${meta.slug}" doesn't match dir name`);
+    console.error(`✗ ${slug}: tool.yaml.slug "${meta.slug as string}" doesn't match dir name`);
     errors++;
   }
 
@@ -36,7 +46,7 @@ for (const slug of slugs) {
     for (const e of errs) console.error(`    ${e}`);
     errors += errs.length;
   } else {
-    console.log(`✓ ${slug} v${meta.version}`);
+    console.log(`✓ ${slug} v${meta.version as string}`);
   }
 }
 

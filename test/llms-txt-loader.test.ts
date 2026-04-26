@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSkillsSection, parseSkillFile } from '../client/llms-txt-loader.mjs';
+import { parseSkillsSection, parseSkillFile } from '../client/llms-txt-loader.ts';
 
 // ---------------------------------------------------------------------------
 // parseSkillsSection

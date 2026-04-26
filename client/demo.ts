@@ -1,5 +1,5 @@
 /**
- * demo.mjs — proof that an agent-style bash session can discover + execute
+ * demo.ts — proof that an agent-style bash session can discover + execute
  * remote tools (whose TS source lives in GitHub) end-to-end.
  *
  * Steps the agent (us, here) performs:
@@ -9,17 +9,16 @@
  *   4. Compose two tools through a unix pipe
  */
 import { Bash } from 'just-bash';
-import { loadRegistry } from './loader.mjs';
+import { loadRegistry } from './loader.ts';
 
-const banner = (s) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
+const banner = (s: string) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
 
 // Allow SHA pinning via env var to bypass jsDelivr's @main cache (TTL ~7min).
-// Usage: REGISTRY=https://cdn.jsdelivr.net/gh/MauricioPerera/agentic-tools-poc@<sha>/dist node client/demo.mjs
 const { manifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
 banner(`Registry loaded: ${manifest.tools.length} tool(s)`);
 for (const t of manifest.tools) console.log(`  • ${t.slug} v${t.version} — ${t.summary}`);
 
-const bash = new Bash({ customCommands: commands });
+const bash = new Bash({ customCommands: commands as never });
 
 banner('1) echo-pretty alone');
 let r = await bash.exec('echo-pretty --text "hello world" --upper');
@@ -38,11 +37,7 @@ console.log('stdout:  ', r.stdout.trim());
 if (r.stderr) console.log('stderr:  ', r.stderr.trim());
 
 banner('4) Network policy enforcement (negative test)');
-const evilCmd = `node --input-type=module -e "
-  const r = await fetch('${manifest.tools.find(t => t.slug === 'ip-info').source.replace('.mjs', '')}');
-  console.log(r.status);
-" 2>&1 || true`;
 console.log('  (skipped — would require modifying a tool to call a non-allowed host)');
-console.log('  ctx.fetch in loader.mjs throws if host not in tool.networkPolicy.allow.');
+console.log('  ctx.fetch in loader.ts throws if host not in tool.networkPolicy.allow.');
 
 banner('Done');

@@ -1,5 +1,5 @@
 /**
- * agent-granite.mjs — full agent loop using Cloudflare Workers AI (Granite 4.0
+ * agent-granite.ts — full agent loop using Cloudflare Workers AI (Granite 4.0
  * H Micro) as the brain and our just-bash registry as the hands.
  *
  * Demonstrates the thesis end-to-end: a small open-weights model can drive a
@@ -9,11 +9,12 @@
  * Auth: pass CF_ACCOUNT_ID and CF_API_TOKEN via env. The token needs the
  * "Workers AI" read+write scope.
  *
- *   CF_ACCOUNT_ID=... CF_API_TOKEN=... node client/agent-granite.mjs "your question"
+ *   CF_ACCOUNT_ID=... CF_API_TOKEN=... node client/agent-granite.ts "your question"
  */
 import { Bash } from 'just-bash';
-import { loadRegistry } from './loader.mjs';
-import { makeObservation } from './smart-bash.mjs';
+import { loadRegistry } from './loader.ts';
+import { makeObservation } from './smart-bash.ts';
+import type { ChatMessage, ToolCall } from '../types/index.ts';
 
 const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
@@ -26,16 +27,16 @@ if (!ACCOUNT || !TOKEN) {
   process.exit(2);
 }
 
-const banner = (s) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
+const banner = (s: string) => console.log(`\n══ ${s} ${'═'.repeat(Math.max(0, 60 - s.length))}`);
 
 const { manifest, commands } = await loadRegistry({ registry: process.env.REGISTRY });
-const bash = new Bash({ customCommands: commands });
+const bash = new Bash({ customCommands: commands as never });
 
 const toolList = manifest.tools
   .map((t) => `- ${t.slug}: ${t.summary}. Output schema: ${JSON.stringify(t.outputSchema ?? {})}`)
   .join('\n');
 
-const messages = [
+const messages: ChatMessage[] = [
   {
     role: 'system',
     content:
@@ -53,7 +54,7 @@ const messages = [
 
 const tools = [
   {
-    type: 'function',
+    type: 'function' as const,
     function: {
       name: 'bash',
       description: 'Execute a bash command and return its output.',
@@ -81,7 +82,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   const msg = choice?.message ?? {};
   const finish = choice?.finish_reason;
 
-  console.log(`finish: ${finish}   usage(round): ${JSON.stringify(reply.usage)}`);
+  console.log(`finish: ${finish ?? '?'}   usage(round): ${JSON.stringify(reply.usage)}`);
 
   // Push assistant message into history
   messages.push({
@@ -96,10 +97,12 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
       const cmd  = String(args?.command ?? '');
       console.log(`tool_call: bash -> ${cmd}`);
       const result = await bash.exec(cmd);
-      const obs = process.env.SMART === '0'
-        ? { stdout: (result.stdout ?? '').trim(), stderr: (result.stderr ?? '').trim(), exitCode: result.exitCode }
-        : makeObservation(cmd, result, manifest);
-      const observation = JSON.stringify(obs);
+      const stdout = (result.stdout ?? '').trim();
+      const stderr = (result.stderr ?? '').trim();
+      const observation =
+        process.env.SMART === '0'
+          ? JSON.stringify({ stdout, stderr, exitCode: result.exitCode })
+          : JSON.stringify(makeObservation(cmd, result as { stdout: string; stderr: string; exitCode: number }, manifest));
       console.log(`observation: ${observation.slice(0, 240)}${observation.length > 240 ? '…' : ''}`);
       messages.push({ role: 'tool', tool_call_id: tc.id, content: observation });
     }
@@ -107,7 +110,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   }
 
   banner('Final answer');
-  console.log(msg.content || '(no content)');
+  console.log(msg.content ?? '(no content)');
   console.log(`\nTotal tokens across rounds: ${totalTokens}`);
   process.exit(0);
 }
@@ -117,7 +120,15 @@ process.exit(1);
 
 // ────────────────────────────────────────────────────────────────────────────
 
-async function callModel(messages, tools) {
+interface RawReply {
+  choices?: Array<{
+    finish_reason?: string;
+    message?: { content?: string | null; tool_calls?: ToolCall[] };
+  }>;
+  usage?: { total_tokens?: number };
+}
+
+async function callModel(msgs: ChatMessage[], toolDefs: typeof tools): Promise<RawReply> {
   const r = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run/${MODEL}`,
     {
@@ -126,11 +137,11 @@ async function callModel(messages, tools) {
         'Authorization': `Bearer ${TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ messages, tools, max_tokens: 256, temperature: 0.1 }),
-    }
+      body: JSON.stringify({ messages: msgs, tools: toolDefs, max_tokens: 256, temperature: 0.1 }),
+    },
   );
   if (!r.ok) throw new Error(`CF API ${r.status}: ${await r.text()}`);
-  const env = await r.json();
+  const env = (await r.json()) as { success: boolean; result: RawReply; errors: unknown };
   if (!env.success) throw new Error(`CF API errors: ${JSON.stringify(env.errors)}`);
   return env.result;
 }
@@ -139,13 +150,15 @@ async function callModel(messages, tools) {
  * Workers AI sometimes double-encodes function-call arguments as a JSON string
  * containing JSON. Handle both cases.
  */
-function parseToolArgs(raw) {
+function parseToolArgs(raw: string | undefined): Record<string, unknown> {
   if (raw == null) return {};
   if (typeof raw !== 'string') return raw;
   try {
-    const once = JSON.parse(raw);
-    if (typeof once === 'string') return JSON.parse(once);
-    return once;
+    const once: unknown = JSON.parse(raw);
+    if (typeof once === 'string') {
+      try { return JSON.parse(once) as Record<string, unknown>; } catch { return {}; }
+    }
+    return (once ?? {}) as Record<string, unknown>;
   } catch {
     return {};
   }
