@@ -251,18 +251,26 @@ export const networkSkillNoPolicy: LintRule = (skill) => {
 
 /**
  * R9 — `forbidden-imports`
- * Phase 1 trust posture (THREAT-MODEL.md V2): handlers run in-process via
- * data: URL import. The `ctx` object is a *convention*, not a sandbox — a
- * handler can `import('node:fs')`, `import('node:child_process')`, or read
- * `process.env` directly and bypass every guarantee the loader makes.
  *
- * Until QuickJS sandboxing lands (Phase 2), the only defense is to detect
- * forbidden imports statically and block merge. This won't stop a motivated
- * attacker (they can use `import(\`no\${'de'}:fs\`)`, eval, or fetch +
- * code injection), but it raises the cost of "accidentally exfiltrating
- * skill" and creates an audit trail in code review.
+ * Defence-in-depth on top of the QuickJS sandbox (THREAT-MODEL.md V2). The
+ * sandbox is the runtime guarantee: `import('node:fs')` returns undefined
+ * inside the VM no matter how it's spelled. R9 is the PR-time check that
+ * stops the same patterns from landing in `main` in the first place. Two
+ * reasons to keep the linter even with the sandbox:
  *
- * Forbidden modules are ones that grant capabilities the loader's curated
+ *   1. Catches accidents early. A developer who copy-pastes example node
+ *      code into a handler gets a CI failure with a clear message instead
+ *      of a confusing runtime "fs.readFileSync is not a function".
+ *   2. Documents intent. A handler that imports `node:fs` is signalling
+ *      something a code reviewer should look at — even if the sandbox
+ *      neutralises the call, the intent is suspicious.
+ *
+ * R9 does NOT stop a motivated attacker (template-literal evasion like
+ * `import(\`no\${'de'}:fs\`)`, eval, fetch + new Function). The sandbox
+ * does. Together they form a ratchet: PR linter → build-time integrity
+ * check → runtime sandbox.
+ *
+ * Forbidden modules are ones that would grant capabilities the curated
  * `ctx` deliberately withholds: filesystem, process spawn, raw sockets,
  * code generation, child threads.
  */
@@ -303,11 +311,12 @@ export const forbiddenImports: LintRule = (_skill, ctx) => {
         field: `$.handler`,
         message: `Handler imports forbidden module "${mod}".`,
         suggestion:
-          `Phase 1 has no sandbox — this import grants capabilities the ` +
-          `loader's curated ctx deliberately withholds (see THREAT-MODEL.md V2). ` +
-          `If you genuinely need this capability, propose adding it to ctx ` +
-          `instead of importing it directly. Phase 2 will move execution to ` +
-          `QuickJS where these imports return undefined.`,
+          `This import grants capabilities the curated ctx deliberately ` +
+          `withholds (see THREAT-MODEL.md V2). The runtime sandbox (QuickJS) ` +
+          `will return \`undefined\` for this import, so the call would fail ` +
+          `at runtime anyway — but a handler reaching for it is signalling ` +
+          `something a reviewer should look at. If you genuinely need this ` +
+          `capability, propose adding it to ctx instead of importing directly.`,
       });
     }
   }

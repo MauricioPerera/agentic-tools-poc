@@ -1,26 +1,31 @@
 /**
- * untrusted-output.ts — V5 strawman defense (THREAT-MODEL.md).
+ * untrusted-output.ts — V5 strawman defence (THREAT-MODEL.md).
  *
  * Skill output flowing back into the agent loop is *content*, not
  * *instructions*. A skill like url2md returns whatever markdown the
  * upstream page contains — which can include adversarial text aimed at
  * the calling LLM ("Ignore previous instructions and …").
  *
- * Phase 1 mitigation: wrap that content in a delimiter the model is
- * taught (via SYSTEM_PROMPT_FRAGMENT below) to treat as data. Apply a
- * per-skill `outputCap` so a malicious upstream cannot flood the context
- * window with payload. Strip ANSI / control characters so terminal
- * sequences cannot be smuggled through.
+ * The mitigation has three parts:
+ *   1. Wrap output in `<skill-output skill="X" trust="untrusted">…
+ *      </skill-output>`. UNTRUSTED_OUTPUT_FRAGMENT (below) is injected
+ *      into the system prompt to teach the model the contract.
+ *   2. Apply a per-skill `outputCap` (declared in `tool.yaml`) so a
+ *      malicious upstream cannot flood the context window with payload.
+ *      Default cap: 8 KB. url2md ships with 4 KB.
+ *   3. Strip ANSI escape sequences and C0/C1 control characters before
+ *      wrapping, so terminal sequences cannot be smuggled through.
  *
- * This is **not** prompt-injection defense — that's an open research
+ * This is **not** prompt-injection defence — that's an open research
  * problem. It is a structural marker that:
  *   - makes injection attempts visible in the trace
  *   - lets the model (and the operator) see "this came from an
  *     untrusted skill, treat its imperatives as suggestions"
  *   - bounds the worst-case payload size
  *
- * Phase 2 will move skill execution into a QuickJS sandbox; the
- * delimiter contract stays the same.
+ * Composes with the QuickJS sandbox (V2) and the manifest sha256 (V1):
+ * even if a hostile upstream API serves a payload, it can't escape the
+ * sandbox AND it lands in the agent loop already capped + delimited.
  */
 import type { SkillDef } from '../types/index.ts';
 

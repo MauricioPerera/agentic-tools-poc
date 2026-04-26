@@ -19,10 +19,12 @@
  * `Buffer`, `setImmediate`, etc.) is `undefined` in the VM. There is no
  * runtime escape hatch — that's the point.
  *
- * Performance note: a fresh VM is created per handler call. QuickJS cold-start
- * is ~10ms on a modern host; the bigger cost is parsing the bundle. The
- * loader caches compiled bytecode (see `compileHandler` below) so the
- * second invocation of the same skill skips re-parsing.
+ * Performance note: a fresh VM is created per handler call. Measured cost on
+ * a modern host: ~134 ms cold (one-time WASM module init, amortised across
+ * the whole process), 7-8 ms warm per call (VM creation + bundle parse +
+ * handler exec). `compileHandler` below caches the parsed/rewritten bundle
+ * source so the second invocation of the same skill skips the regex pass;
+ * the WASM module itself is a process-lifetime singleton (see `getModule`).
  */
 import { newQuickJSAsyncWASMModule } from 'quickjs-emscripten';
 import type {
@@ -33,23 +35,34 @@ import type {
 import type { ToolContext } from '../types/index.ts';
 
 // ---------------------------------------------------------------------------
-// Module-level singleton — initialising the WASM runtime is expensive (≈100ms
-// the first time), so we keep one instance alive for the lifetime of the
-// process. Each handler call still gets its own isolated context.
+// Module-level singleton — initialising the WASM runtime is expensive (~100 ms
+// the first time, observed 134 ms in practice), so we keep one instance alive
+// for the lifetime of the process. Each handler call still gets its own
+// isolated context.
+//
+// We clear the cached promise on failure so a transient init error (out of
+// memory, fs error loading the .wasm) doesn't poison every subsequent call
+// for the lifetime of the process. Without this, one bad start = permanent
+// "sandbox unavailable" until the host restarts.
 
 let modulePromise: Promise<QuickJSAsyncWASMModule> | null = null;
-function getModule(): Promise<QuickJSAsyncWASMModule> {
+async function getModule(): Promise<QuickJSAsyncWASMModule> {
   if (!modulePromise) modulePromise = newQuickJSAsyncWASMModule();
-  return modulePromise;
+  try {
+    return await modulePromise;
+  } catch (e) {
+    modulePromise = null;
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Minimal URL/URLSearchParams polyfill — QuickJS core does not ship them.
-// We only implement the surface real handlers use:
-//   - new URLSearchParams(obj | iterable | string)
-//   - sp.set(key, value), sp.append(key, value), sp.get(key)
-//   - sp.toString() (urlencoded form)
-// Anything beyond that throws so we notice if a future handler reaches for it.
+// Minimal URLSearchParams polyfill — QuickJS core does not ship it. Surface
+// covers what real handlers in this registry actually use: construction from
+// object/iterable/string, set/append/get/has/delete, toString(), iteration.
+// `URL` itself is NOT polyfilled — no shipped handler uses `new URL(...)`. If
+// a future handler needs it, add a polyfill here and a sandbox parity test;
+// don't import a node URL implementation (would defeat the sandbox boundary).
 const URL_POLYFILL = `
 if (typeof URLSearchParams === 'undefined') {
   globalThis.URLSearchParams = class URLSearchParams {
