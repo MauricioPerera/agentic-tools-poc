@@ -652,64 +652,59 @@ concrete examples like `ip-info | jq -r '.country'` so Hermes picks the right
 jq path instead of guessing. `client/compare.ts` and `client/agent-granite.ts`
 both can carry per-model prompt fragments — same idea, different surface.
 
-### Discipline-bucket measurement (5 queries × 4 models, real data)
+### Discipline-bucket measurement (5 queries × 5 models, real data)
 
-Below: actual results from `SUITE=discipline` against 4 of the 5
-benchmark models. Gemma 3 12B-it is excluded because its current
-Workers AI deployment doesn't support `tool_choice: 'auto'` (the vLLM
-server was started without `--enable-auto-tool-choice` /
-`--tool-call-parser` flags) — it's currently unusable as an agent on
-Workers AI regardless of how disciplined it might be.
-
-The 5 queries are all answerable from training knowledge alone
-("capital of Spain", "7 × 8", "language of 'merci'", "past tense of
-'run'", "spell 'mississippi' in uppercase"). The disciplined outcome
-is `without_tool` — a model that calls `dictionary` to spell
+Actual results from `SUITE=discipline` against all 5 benchmark
+models. The 5 queries are all answerable from training knowledge
+alone ("capital of Spain", "7 × 8", "language of 'merci'", "past
+tense of 'run'", "spell 'mississippi' in uppercase"). The disciplined
+outcome is `without_tool` — a model that calls `dictionary` to spell
 "mississippi" is wrong-shaped even when correct.
 
 | Model | Composable disciplined | Classic disciplined | Pattern |
 |---|:---:|:---:|---|
-| Granite 4.0 H Micro (3.4B) | 1/5 (D2) | 2/5 (D2 + D3) | Reaches for tool but emits empty content when it does (`wrong_with_tool`, not `via_tool`) |
+| Granite 4.0 H Micro (3.4B) | 1/5 (D2) | 2/5 (D2 + D3) | Reaches for tool, emits empty content when it does (`wrong_with_tool`, not `via_tool`) |
 | Hermes 2 Pro 7B (beta) | 0/5 | 0/5 | Always reaches for tool; never produces a correct answer |
 | Llama 3.1 8B fp8 | 0/5 | 0/5 | Always reaches for tool; never produces a correct answer |
-| Gemma 3 12B-it | n/a | n/a | Workers AI deployment unusable: `tool_choice: 'auto'` rejected |
-| Qwen 2.5 Coder 32B | 2/5 (D2 + D5) | 2/5 (D2 + D5) | Best discipline of the four — answers concretely on math + spelling |
+| **Gemma 4 26B-a4b-it** | **2/5** (D2 + D5) | **3/5** (D1 + D2 + D5) | **Best discipline of the five in classic mode** — answers Madrid, 56, MISSISSIPPI directly |
+| Qwen 2.5 Coder 32B | 2/5 (D2 + D5) | 2/5 (D2 + D5) | Math + spelling without reaching; over-reaches on language/verb questions |
 
-Three findings with real consequences:
+Three findings the previous 3-query A/B couldn't surface:
 
-1. **None of the 4 testable models are above 40% disciplined.** With
-   tools available in the prompt, every open-weights model in our
-   suite over-reaches — it pattern-matches on "tools present" before
-   it considers "is this a knowledge question". The system-prompt
-   instruction "never answer from training knowledge for live data"
-   is structurally insufficient; models need either (a) explicit
-   per-query gating or (b) a discipline-trained checkpoint.
+1. **Best classic-mode discipline is 60% (Gemma 4 26B); best
+   composable is 40% (Gemma 4 + Qwen).** With tools available in the
+   prompt, every open-weights model in our suite under-resists —
+   pattern-matching on "tools present" before considering "is this a
+   knowledge question". The system-prompt instruction "never answer
+   from training knowledge for live data" is structurally
+   insufficient; the larger model (Gemma 4 26B) shows discipline
+   scales with capacity but doesn't saturate at this size.
 
-2. **D2-arithmetic ("7 × 8") is the only universal discipline pass
-   among models that have any.** Granite + Qwen both answer 56
-   directly without invoking a tool. Spelling, capitals, language ID
-   — those all trigger spurious tool calls even though training
-   knowledge is sufficient.
+2. **D2-arithmetic ("7 × 8") is the universal discipline pass.** All
+   models that have any discipline at all answer 56 directly without
+   tool. D5-spell-uppercase is second-most disciplined.
+   Capital-of-Spain, verb-conjugation, and language-of-loanword
+   trigger spurious tool calls in most models — Gemma 4 classic is
+   the only one that resists on D1-capital.
 
-3. **Reaching for a tool on a discipline question often produces
-   empty content** (model emits `tool_calls` but no answer text). The
-   outcome is `wrong_with_tool`, not `via_tool` — undisciplined AND
-   wrong, not just undisciplined. So the cost of over-reach is
-   compounded: you waste tokens on the tool call AND don't get an
-   answer.
+3. **Reaching for a tool on a discipline question usually produces
+   empty content** (model emits `tool_calls` with no answer text).
+   The outcome is `wrong_with_tool`, not `via_tool` — undisciplined
+   AND wrong, not just undisciplined. The cost of over-reach
+   compounds: tokens spent on the tool call AND no answer back.
 
 This is exactly the failure mode the previous 3-query A/B couldn't
-expose. Adding tools to a small open-weights agent without discipline
-training degrades behaviour on questions it would have answered
-correctly bare — a real architectural finding, not a quirk.
+expose. Adding tools to a small open-weights agent often DEGRADES
+behaviour on questions training knowledge would have handled — a
+real architectural finding, not a quirk.
 
-> **Cost note**: this measurement was 4 models × 5 queries × 2 modes =
-> 40 model calls, ~$0.05 total (Granite + Hermes free, Llama ~$0.01,
-> Qwen ~$0.04). The 15 remaining queries × 5 models × 2 modes need
-> tool execution against the live skills, which requires
-> `CF_API_TOKEN` in env to run `client/compare.ts` properly. They are
-> not in this table; the framework has been validated end-to-end via
-> the discipline subset.
+> **Cost note**: this measurement was 5 models × 5 queries × 2 modes
+> = 50 model calls, ~$0.06 total (Granite + Hermes free, Llama
+> ~$0.01, Gemma 4 ~$0.02, Qwen ~$0.04). The 15 remaining queries × 5
+> models × 2 modes need tool execution against the live skills, which
+> requires `CF_API_TOKEN` in env to run `client/compare.ts` properly.
+> They are not in this table; the framework has been validated
+> end-to-end via the discipline subset.
 
 ### Recommendation matrix (read with hedges)
 
@@ -724,8 +719,8 @@ correctly bare — a real architectural finding, not a quirk.
 | Tool-tuned small (Granite 4.0 H Micro, $0.017/M in) | ✅ 6/6 | **classic primary** | Only model in our suite that converged on every query. JSONSchema acts as safety net. |
 | Older 7B instruct (Hermes 2 Pro) | ✅ 1-3/6 → 5+/6 | classic + per-model `model_overrides` block | Without tuning, invents optional args + gives up. With tuning, recovers. |
 | Mid-size open-weights (Llama 3.1 8B) | ✅ 0-1/6 + 0/5 discipline | **not recommended** without tuning | Loops on tool output, reaches for unavailable commands. Discipline measurement: 0% — never resists calling a tool. |
-| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 (legacy) | classic — watch for tokenization loops | Reasoning capability is a liability here; eats tokens without improving outcomes. **Gemma 3 12B-it** (the current Workers AI Gemma) is currently unusable as an agent — deployment lacks `--enable-auto-tool-choice`. |
-| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 + 2/5 discipline | not recommended for general agent use | Hallucinates `<tools>` markup as text on chains, but discipline measurement is the best of the open-weights tested (40% — answers math + spelling without reaching for tool). |
+| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 + **3/5 classic discipline** | **classic — best discipline of the five** | Most likely of the open-weights to answer correctly without spurious tool calls (60% on classic discipline, 40% on composable). Watch for tokenization loops on chains. |
+| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 + 2/5 discipline | composable for code-shaped queries; classic for chains | Hallucinates `<tools>` markup as text on chains; discipline measurement is competitive (40% — answers math + spelling without reaching for tool). |
 | Frontier (Claude, GPT-4o, *not tested in this repo*) | ❌ untested | composable (received wisdom) | Reliable bash composition + fewer tokens *should* favour composable, but we have no data here. |
 
 **Cost-aware conclusion**: among the models we benchmarked,
