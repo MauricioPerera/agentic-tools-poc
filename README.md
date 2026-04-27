@@ -518,16 +518,18 @@ not throughput-bound). Run all five sequentially in under an hour.
 
 ### Results — IBM Granite 4.0 H Micro (3.4B)
 
-> **Two snapshots below.** The first is the legacy measurement from
-> the original POC (composable mode included an upfront skill list in
-> the system prompt; classic mode used raw observations, no smart-bash
-> enrichment). The second is the current measurement after two
-> intervening commits: composable now uses filtered discovery (no
-> upfront list — see "How discovery works" above), and classic now
-> includes smart-bash enrichment by default. The shift in the numbers
-> is the cost of those architectural changes for THIS model.
+> **Granite composable is currently regressed** — see
+> [issue #4](https://github.com/MauricioPerera/agentic-tools-poc/issues/4).
+> The `legacy snapshot` below (pre-`c6dfd69`, composable with upfront
+> skill list) is the **reference** for Granite composable behaviour
+> until the regression is resolved. The `current snapshot` shows the
+> post-`c6dfd69` numbers, but trace analysis confirms its
+> "correctness" cells are hallucinated answers that match the
+> expectation regex by luck — not real tool use. **Do not read those
+> cells as Granite capability measurements.** Classic mode is
+> unaffected; numbers there are deterministic and reproducible.
 
-**Legacy snapshot** (commit before `c6dfd69`, composable with upfront list):
+**Legacy snapshot — reference for Granite composable** (commit before `c6dfd69`, composable with upfront list):
 
 | Query | Mode | Rounds | Tokens | Correct |
 |---|---|---:|---:|:---:|
@@ -540,31 +542,33 @@ not throughput-bound). Run all five sequentially in under an hour.
 | **Totals (legacy)** | composable | **9** | **3,779** | **3/3** |
 | **Totals (legacy)** | classic | **7** | **2,651** | **3/3** |
 
-**Current snapshot** (commit `c6dfd69` and after — discovery prompt + smart-bash in classic):
+**Current snapshot — post-`c6dfd69`** (regression for composable, classic unaffected):
 
-| Query | Mode | Rounds | Tokens | Correct |
-|---|---|---:|---:|:---:|
-| Q1 — uppercase | composable | 1 | 486 | ✗ wrong_no_tool — emitted `AGENTIC TOOLS PO` (truncated, no tool call) |
-| Q1 | classic | 2 | 2,024 | ✅ AGENTIC TOOLS POC |
-| Q2 — country | composable | 5 | 3,898 | ✅ US (hallucinated — used `curl restcountries.com` instead of discovering ip-info) |
-| Q2 | classic | 2 | 2,032 | ✅ MX |
-| Q3 — chained | composable | 4 | 2,940 | ✅ YOU ARE IN: USA (hallucinated again, lucky regex match) |
-| Q3 | classic | 3 | 3,363 | ✅ YOU ARE IN: MX |
-| **Totals (current, smart=on)** | composable | **10** | **7,324** | **2/3** (one hallucinated answer) |
-| **Totals (current, smart=on)** | classic | **7** | **7,419** | **3/3** |
-| **Totals (current, smart=off)** | classic | **7** | **6,995** | **3/3** |
+| Query | Mode | Rounds | Tokens | Correct | Notes |
+|---|---|---:|---:|:---:|---|
+| Q1 | composable | 1 | 486 | ✗ wrong_no_tool | model emits `AGENTIC TOOLS PO` (truncated) without calling any tool |
+| Q1 | classic | 2 | 2,024 | ✅ AGENTIC TOOLS POC | deterministic, n=3 |
+| Q2 | composable | varies | varies | **0-2/3 across n=3** | when "correct", trace shows model hallucinated a country code (e.g. "US", "FR") that matched the regex; never invoked `ip-info`. **Treat as undefined** |
+| Q2 | classic | 2 | 2,032 | ✅ MX | deterministic, n=3 |
+| Q3 | composable | varies | varies | **0-1/3 across n=3** | same hallucination pattern: when "correct" the model emitted `echo 'FR' \| tr ... \| sed 's/^/YOU ARE IN: /'` — invented country, no real tool use. **Treat as undefined** |
+| Q3 | classic | 3 | 3,363 | ✅ YOU ARE IN: MX | deterministic, n=3 |
 
-**What changed and why it matters**: removing the upfront skill list
-from the composable system prompt (commit `c6dfd69`, the architectural
-fix that made discovery genuine instead of theatre) **broke composable
-for Granite**. Granite cannot productively use `bash list_skills` /
-`bash tool_schema` to discover — it improvises with `curl
-restcountries.com` and hallucinates answers that pass the regex by
-luck. **Discovery requires a model class Granite isn't in.** Classic
-mode still works: 3/3 correct, both with and without smart-bash, with
-smart-bash adding ~6% tokens for no measurable benefit. The old
-"composable competitive with classic for Granite" claim depended on
-the upfront-list crutch.
+**What the regression actually is**: removing the upfront skill list
+(commit `c6dfd69`) made discovery genuine for models that can plan a
+discovery sequence (Gemma 4 demonstrated this end-to-end). For
+Granite, the model cannot — instead of running `bash list_skills` to
+discover `ip-info`, it improvises `curl restcountries.com` (a host not
+in the network allowlist; the call effectively does nothing useful)
+and then emits a hallucinated answer. **In 12 Granite composable runs
+across the variance characterization (3 queries × 2 smart-states ×
+2 reps), zero used the registry's `ip-info` skill.** The "correctness"
+column for Granite composable in the post-regression state measures
+whether hallucinated text matches the expectation regex, not model
+capability.
+
+Classic mode is unaffected: 3/3 deterministic correctness with and
+without smart-bash, identical numbers across 3 reps. Smart-bash adds
+~6% tokens (within noise) for no measurable benefit in this cell.
 
 ### Results — Google Gemma 4 26B-a4b-it ($0.10/M in, $0.30/M out)
 
@@ -726,37 +730,60 @@ contained claims contradicted by the discipline-bucket table below.)
    no-reasoning model (Llama 3.1 70B Instruct) or a small reasoning
    model (DeepSeek-R1-Distill). Neither has been tested in this repo.
 
-4. **Smart-bash observation enrichment shows no measurable benefit
-   in classic mode for the two models we ablated.** Running
-   `SMART=0 SUITE=basic` against Granite and Llama 3.1 8B (classic
-   mode), 3 queries, smart-bash on vs off:
+4. **Smart-bash observation enrichment shows no correctness benefit
+   in any of the 8 cells measured (n=3 reps per cell, basic suite).**
+   The previous version of this finding made an over-strong "claim
+   retired" assertion based on n=1; the variance characterization
+   below is what actually supports the conclusion.
 
-   | Model | Mode | Rounds | Tokens | Cost | Correct |
-   |---|---|---:|---:|---:|---:|
-   | Granite | classic + smart | 7 | 7,419 | $0.000140 | 3/3 |
-   | Granite | classic + **raw** | 7 | **6,995** | **$0.000132** | 3/3 |
-   | Llama 3.1 8B | classic + smart | 8 | 7,013 | $0.0011 | 1/3 |
-   | Llama 3.1 8B | classic + **raw** | **6** | **4,337** | **$0.000685** | 1/3 |
+   Variance characterization (n=3 reps per cell):
 
-   For Granite the difference is within noise (~6%, same 3/3
-   correctness). **For Llama, raw is strictly better** — 25% fewer
-   rounds and 38% fewer tokens with the same (poor) correctness.
-   Smart-bash's enriched observation actually *costs* Llama tokens
-   without converting to better outcomes.
+   | Model | Mode | Smart | Rounds (range) | Tokens (range) | Correct (across 3 reps) | Evidence quality |
+   |---|---|---|---|---|---|---|
+   | Granite | classic | ON | 7-7 | 7,419-7,419 | 3/3, 3/3, 3/3 | **HIGH** (deterministic) |
+   | Granite | classic | OFF | 7-7 | 6,995-6,995 | 3/3, 3/3, 3/3 | **HIGH** (deterministic) |
+   | Granite | composable | ON | 8-11 | 7,069-8,673 | **0/3, 1/3, 2/3** | **LOW** — see note |
+   | Granite | composable | OFF | 11-11 | 7,264-7,962 | 0/3, 0/3, 0/3 | HIGH (deterministic) |
+   | Llama | composable | ON | 11 | 3,686-4,536 | 1/3, 1/3, 1/3 | HIGH (the "1" is Q1 without_tool from training) |
+   | Llama | composable | OFF | 11 | 2,846-2,975 | 1/3, 1/3, 1/3 | HIGH (same) |
+   | Llama | classic | ON | 8-8 | 7,033-7,088 | 1/3, 1/3, 1/3 | HIGH (very low variance) |
+   | Llama | classic | OFF | 6-6 | 4,287-4,332 | 1/3, 1/3, 1/3 | HIGH (very low variance) |
 
-   This contradicts the previous version of this finding — which
-   claimed smart-bash "amplifies" certain models — and the contradiction
-   is the point: that claim was not measured until now. The ablation
-   covers n=2 models on the basic suite; running it on Hermes, Gemma 4,
-   and Qwen would either solidify "smart-bash is neutral-to-negative
-   in classic" or surface a class of models where the enrichment helps
-   (most likely Hermes, where the `model_overrides` machinery already
-   suggests this model class needs richer hints).
+   **The Granite composable + smart cell looks like evidence (mean
+   1/3 vs 0/3 baseline) but trace analysis disqualifies it.** The two
+   reps that showed "correct" answers had the model emit hallucinated
+   country codes — `echo 'FR' | tr ... | sed 's/^/YOU ARE IN: /'`
+   without ever calling `ip-info`, and `echo 'US'` after failed curls
+   to a non-allowlisted host. Both happened to match their expectation
+   regex by luck. **In 12 Granite composable runs across this ablation,
+   zero used the registry's `ip-info` skill.** The apparent smart-bash
+   benefit is an artefact of smart-bash causing Granite to give up
+   faster (8-11 rounds vs always 11) and emit a hallucinated answer
+   that regex-matches by chance, not of smart-bash guiding the model
+   to real tool use. See [issue #4](https://github.com/MauricioPerera/agentic-tools-poc/issues/4)
+   for the post-`c6dfd69` Granite composable regression context.
 
-   The enrichment may still help in **composable mode** — that's a
-   different experiment (`SMART=0 MODE=composable`) we haven't run.
-   The classic-mode result alone is enough to retire the previous
-   blanket claim.
+   **The strongest individual finding is Llama classic + smart**:
+   deterministic +62% tokens consistently across 3 reps (4,287 vs
+   7,033) with identical 1/3 correctness. Smart-bash actively harms
+   cost in this cell with no correctness gain — that's a defensible
+   "smart-bash hurts" claim with high evidence quality.
+
+   **What this whole table supports**: smart-bash provides no
+   correctness benefit in any measured cell. In some cells it adds
+   tokens within noise (Granite classic +6%); in one cell it harms
+   cost meaningfully (Llama classic +62%). The original repo claim
+   ("+26% tokens, wrong→correct") was measured in a single cell that
+   we cannot now reproduce as a real signal — and our new measurement
+   of an analogous cell (Granite composable + smart) reveals the
+   apparent benefit was hallucination luck, not tool-use guidance.
+
+   **What this table does NOT support**: blanket "smart-bash never
+   helps". Hermes (where `model_overrides` machinery suggests this
+   class needs richer hints), Gemma 4, and Qwen have not been ablated.
+   It's plausible smart-bash helps Hermes specifically. Running those
+   ablations would either widen the "no benefit" finding or surface
+   a model class where enrichment matters.
 
 ### Rescuing Hermes via per-model skill tuning
 
