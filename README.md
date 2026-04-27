@@ -890,67 +890,118 @@ real architectural finding, not a quirk.
 > They are not in this table; the framework has been validated
 > end-to-end via the discipline subset.
 
-### Recommendation matrix (read with hedges)
+### Recommendation method (not matrix)
 
-> **Sample size caveat (read this first)**: the chain-correctness numbers
-> in this matrix come from **3 queries** (Q1-Q3 in `client/eval-suite.ts`,
-> selectable via `SUITE=basic`). The discipline numbers come from a
-> separate **5 queries** (D1-D5, selectable via `SUITE=discipline`).
-> The remaining 12 queries in the full 20-query suite (chain-multi,
-> error, ambiguous buckets) have **not** been run against all 5 models —
-> they require `CF_API_TOKEN` and a live tool-execution path the eval
-> harness drives. The cells below are **directional observations on a
-> small sample**, not validated recommendations.
+> **Why this section is a method, not a mapping**: this repo has had
+> two previous matrix versions, both indexed by model class, both
+> refuted by the next round of data. **v1** ("small=classic,
+> frontier=composable") was refuted by Gemma 4 in basic suite. **v2**
+> ("reasoning-capable=composable, instruct-direct=classic") was
+> refuted by SUITE=full where classic dominates correctness in all 5
+> models including Gemma 4. The structural problem with both v1 and v2
+> was the same: they attributed to the model what turned out to be a
+> function of model × workload. **v3** (this section) reframes mode
+> choice as a method you apply against your own data, not a lookup
+> table you trust ours.
 
-> **Tuning asymmetry caveat**: only Hermes has `model_overrides` defined
-> in the registry today (`ip-info` and `url2md`). For Hermes, both
-> composable and classic modes ran with the same tuning applied —
-> "classic + tuning vs composable + tuning" is the actual comparison
-> behind that row, not "classic + tuning vs composable raw". For the
-> other four models, both modes ran without per-model tuning. The
-> matrix language has been corrected accordingly.
+#### The empirical observation that drives the method
 
-> **Confound caveat**: the model that did best on chain composition
-> (Gemma 4, 26B with reasoning field) is also the **largest** model in
-> our suite. We cannot from this data attribute Gemma's composable
-> success to "reasoning capability" vs "raw scale". Disambiguating
-> would need either a large no-reasoning model (Llama 3.1 70B Instruct)
-> or a small reasoning model (DeepSeek-R1-Distill-Qwen-7B). Neither is
-> in the current Workers AI catalog, so the question stays open.
+SUITE=full × 5 models × 2 modes (200 model calls, ~$0.05). Per-bucket
+"wins" across the 5 models (**win = strictly higher pass rate within
+the bucket; ties counted separately, not assigned to either mode**):
 
-| Model class | Tested with | Observation | Caveat |
-|---|---|---|---|
-| Tool-tuned small (**Granite 4.0 H Micro**, 3.4B, $0.017/M in) | Q1-Q3 chains + D1-D5 discipline (no per-model tuning) | **Classic wins on chains** (7 vs 9 rounds, 2,651 vs 3,779 tokens, 3/3 both modes). Discipline 1/5 composable, 2/5 classic. JSONSchema safety net helps when chains compose. | Only model in suite that converged on every chain query. Generalisation to other small instruct models untested. |
-| Older 7B instruct (**Hermes 2 Pro**, beta) | Q1-Q3 chains + D1-D5 discipline (with `model_overrides` applied to BOTH modes) | Without tuning both modes fail (1/3). With tuning both reach 3/3 — tuning rescued **both** modes, not classic specifically. Discipline 0/5 in either mode. | Overrides are applied to both modes (nominally symmetric), but their *effect* may differ by mode — the tuning rewrites field descriptions and removes optional args, which is information classic mode reads from the JSONSchema directly while composable mode sees only via `tool_schema`. We have not measured "with-tuning composable vs with-tuning classic" head-to-head; we only know both reach 3/3. Token counts are estimates (Hermes beta returns zero usage). |
-| Mid-size instruct (**Llama 3.1 8B fp8**, $0.15/M in) | Q1-Q3 chains (aggregated only) + D1-D5 discipline (no per-model tuning) | Aggregated chain correctness 1/3 composable, 0/3 classic (model loops on tool output in classic, gets lucky in composable by skipping). Discipline 0/5 either mode — never resists tool. | **Per-query detail pending** — only aggregated correctness exists in the cross-model takeaway above, not the rounds/tokens breakdown the other models have. The matrix recommendation cell is empty until that's measured. |
-| Reasoning mid-tier (**Gemma 4 26B-a4b-it**, $0.10/M in) | Q1-Q3 chains + D1-D5 discipline (no per-model tuning) | **Composable wins on chains for this model** — 6 vs 8+ rounds, 1,461 vs 2,975+ tokens, 2-3/3 vs 2/3 (classic got stuck in loop on Q3). Discipline inverts: 2/5 composable, 3/5 classic. | This is the row where the previous matrix said "classic primary" but the data say composable. The trade-off is **chain efficiency vs discipline**, not a single best mode. |
-| Coder mid-tier (**Qwen 2.5 Coder 32B**, $0.66/M in) | Q1-Q3 chains (aggregated only) + D1-D5 discipline (no per-model tuning) | Aggregated chain correctness 1/3 composable, 2/3 classic. Discipline 2/5 both modes. Hallucinated `<tools>{...}` as raw text on chains BEFORE the Qwen `response: {name, arguments}` shape was normalised in `client/model-adapter.ts` (added in commit [`efa209b`](https://github.com/MauricioPerera/agentic-tools-poc/commit/efa209b), 2026-04-26). Chain correctness has not been re-measured against the post-fix adapter. | **Per-query detail + post-fix re-measurement pending against ≥`efa209b`.** The 2/3 classic correctness number predates that commit and may improve. |
-| Frontier (Claude, GPT-4o) | ❌ untested | No data. Received-wisdom expectation: composable should favour these, but we have not verified. | Pure speculation cell — would be removed in a stricter framing. |
+| Bucket | Composable wins | Classic wins | Tied |
+|---|:---:|:---:|:---:|
+| `single` (invoke 1 skill correctly) | 0 / 5 | **5 / 5** | 0 |
+| `chain-2` (pipe output → next skill) | 1 / 5 | **4 / 5** | 0 |
+| `chain-multi` (3+ steps) | 0 / 5 | **3 / 5** | 2 |
+| `error` (recovery, schema discovery) | 1 / 5 | **4 / 5** | 0 |
+| `discipline` (do NOT call a tool) | **4 / 5** | 1 / 5 | 0 |
+| `ambiguous` (multiple skills could answer) | 1 / 5 | **4 / 5** | 0 |
 
-**Pattern in n=2 instruct vs n=1 reasoning** (Granite + Hermes go better
-in classic; Gemma 4 goes better in composable): **plausibly suggests**
-that the relevant axis is "model emits a deliberate reasoning step
-before tool call" vs "model goes straight to tool emission". But size
-is **confounded** with reasoning in this dataset (see caveat above) —
-so this pattern is a **hypothesis to test**, not a recommendation to
-ship. The honest summary right now is:
+**Classic dominates correctness on queries that require tool use.
+Composable dominates discipline on queries that don't.** The pattern
+is consistent across 5 model classes — but it is an empirical
+observation on n=5 × 20 queries × 1 run, not a law.
 
-> *On the 3 chain queries we measured, Granite + classic + smart-bash is
-> the best cost/correctness combination ($0.000016/query). Gemma 4 +
-> composable + smart-bash ran more efficiently on the same chains
-> (-50% tokens) but at higher absolute cost due to Gemma's per-token
-> price. Beyond these two data points, we don't know.*
+#### Step 0 — viability pre-filter
 
-Three concrete ways to strengthen any row above:
+Before the mode discussion is meaningful, the model must be capable of
+the workload at all. SUITE=full classic correctness:
 
-1. Run `SUITE=full` (the 20-query corpus in `client/eval-suite.ts`)
-   against each model — fills the chain-multi, error, and ambiguous
-   buckets that today have no per-model data.
-2. Add `model_overrides` blocks for Llama 3.1 8B and Gemma 4 (today
-   only Hermes has them) and re-measure to see if the gap closes.
-3. Run an ablation isolating smart-bash's contribution from the
-   schema-gateway: classic+raw vs classic+smart in at least 2 models
-   (currently 0).
+| Model | Classic correctness | Verdict |
+|---|---:|---|
+| Granite 4.0 H Micro | 20/20 | viable, lowest cost ($0.000986/sweep) |
+| Gemma 4 26B-a4b | 18/20 | viable |
+| Hermes 2 Pro 7B (beta) | 15/20 | viable, free in beta |
+| Qwen 2.5 Coder 32B | 13/20 | viable but expensive ($0.0225/sweep, 23× Granite) |
+| **Llama 3.1 8B fp8** | **6/20** | **not viable for tool use** |
+
+A model that converges <50% in its best mode doesn't have a "best
+mode" worth choosing — it has a model problem. **Llama 3.1 8B is
+excluded from the mode discussion below**: the priority for Llama is
+to use a different model, not to tune the mode.
+
+#### The method
+
+For viable models:
+
+1. **Identify your workload's primary dimension.** Two cases:
+   - **Instrumental** (call skills to act on data, fetch info,
+     transform): you care about correctness on `single`, `chain-2`,
+     `chain-multi`, `error`, `ambiguous` buckets.
+   - **Discipline-sensitive** (model should answer from training and
+     reach for tools only when warranted): you care about NOT
+     over-reaching on knowledge questions.
+
+2. **Pick the mode that wins that dimension** in our cross-model
+   observation as your starting hypothesis:
+   - Instrumental → **classic**
+   - Discipline-sensitive → **composable**
+
+3. **Measure your specific (model, workload) combination.** Run
+   `SUITE=full` against your model, or your own representative
+   queries. **The method survives contradicting data precisely because
+   it tells you to measure rather than trust the table above.**
+
+4. **Cost is a tiebreaker after viability + mode are settled.**
+   Granite + classic at ~$0.00005/query is the cheapest viable
+   combination we measured. Qwen + classic at ~$0.001/query is 23×
+   more expensive for less correctness.
+
+#### What this method does NOT claim
+
+- That classic always wins correctness across all future models.
+- That composable always wins discipline across all future models.
+- That the per-bucket pattern above generalises beyond n=5.
+
+#### What sustains the method against future data
+
+The method's claim is "decide by workload, then measure". This
+survives a Llama 70B re-entering the viability filter, new workload
+types, or per-model exceptions documented as exceptions. The only
+result that **contradicts** the method is one where the
+workload↔mode association turns out to be random per model — i.e.,
+where bucket-level guidance becomes useless. We haven't seen this at
+n=5 but cannot rule it out at n=10 or n=100.
+
+The method also becomes **obsolete** (not contradicted) if a third
+execution mode emerges that dominates both dimensions — composable +
+classic is a binary today, but a future hybrid (e.g. classic with
+adaptive schema injection, or composable with workload-detection
+auto-fallback) would expand the option space and the section would
+update with the new option rather than refute itself.
+
+#### Stability commitment
+
+This section is **stable until a qualitatively new data point lands**:
+a model tier not yet measured (Llama 70B, DeepSeek-R1-Distill, a
+frontier model), a workload type outside the current 6 buckets, or a
+third execution mode. Additional iterations on the existing 200-call
+dataset will not be reflected here — re-reading the same data
+produces a more confident version of the same observation, not a
+different recommendation. Two prior matrix iterations on smaller data
+showed that pattern in the commit log; v3 closes that cycle.
 
 
 
