@@ -576,10 +576,28 @@ arguments) — the new `client/model-adapter.ts` normalizes both.
 | Native tool-call format | OpenAI (double-encoded args quirk) | Hermes-style (top-level `tool_calls`, parsed args) | Hermes-style | OpenAI + `reasoning` field | Yet another (`response: {name, arguments}` object + empty `tool_calls`) |
 | Reported usage tokens | ✅ Real | ❌ All zeros (beta) | ✅ Real | ✅ Real | ✅ Real |
 
-**Honest claim**: across 5 model classes on this 3-query suite,
-**Granite 4.0 H Micro is the only model that converged correctly on every
-query in both modes** without per-model tuning. This is a single
-benchmark, not a generalization — but it's a striking single benchmark.
+**Honest claim** (narrow): across 5 model classes on the 3-query
+basic suite, **Granite 4.0 H Micro is the only model that converged
+correctly on every query in both modes** without per-model tuning. The
+classic vs composable trade-off WITHIN each model is itself
+model-specific — see the recommendation matrix below. The two patterns
+worth highlighting from the data:
+
+- **Granite + classic** is the most efficient combination on the chains
+  we measured (3/3 in 7 rounds / 2,651 tokens, vs 9 rounds / 3,779
+  composable). Classic gains ~30% tokens at no correctness cost.
+- **Gemma 4 + composable** is more efficient than **Gemma 4 + classic**
+  on the same chains (-50% tokens, fewer rounds, classic got stuck in a
+  loop on Q3). The previous version of this README claimed "classic
+  primary" for Gemma based on a discipline measurement; the chain data
+  contradict that recommendation. Both observations are now reflected
+  in the matrix.
+
+This is **n=2 model classes showing different mode-preferences**, not
+a validated rule. Size and reasoning capability are confounded in the
+data (Gemma is both larger AND has a reasoning field) — the question
+of WHY Gemma prefers composable while Granite prefers classic stays
+open until we test a model that varies one dimension and not the other.
 
 **Discipline note**: a "correct" answer can come from invoking the right
 tool *or* from the model bypassing the tool entirely and answering from
@@ -630,22 +648,52 @@ The token-count alone hides this. Run `npm run compare` against any model
 and the SUMMARY table now breaks out `In | Out | Cost` per query so you
 can see which mode is actually cheaper in $ for your workload.
 
-### Three counter-intuitive findings
+### Three findings consistent with the data
 
-1. **Granite (3.4B, $0.017/M in) beats Qwen (32B, $0.66/M in) on tool
-   discipline AND cost.** A 32× input-price gap and the larger model
-   still hallucinates `<tools>` markup as text. Param count and price
-   tier are bad predictors of tool-use reliability.
+(These were rewritten when the recommendation matrix was reorganised
+around the actual measurements — the previous version of this section
+contained claims contradicted by the discipline-bucket table below.)
 
-2. **Mid-size open-weights (Llama 3.1 8B, Gemma 4 26B) skip tools when
-   they think they can answer from training.** Disciplined tool use is
-   a separate capability from raw intelligence — and our suite shows
-   only Granite consistently demonstrates it.
+1. **Cost gap (38×) is enormous and uncorrelated with tool-use
+   reliability.** Granite at $0.017/M input is 38× cheaper than Qwen
+   at $0.66/M input. On the discipline measurement (5 queries, both
+   modes), Granite scores 1-2/5 and Qwen scores 2/5 — basically tied.
+   Param count and price tier predict cost cleanly but predict
+   tool-use reliability poorly. Among the 5 models tested, the largest
+   (Gemma 4 26B at 2-3/5) only modestly outperforms the smallest
+   (Granite 3.4B at 1-2/5).
 
-3. **The smart-bash contract amplifies models that can self-correct
-   (Granite, Hermes-with-tuning) but doesn't fix models that don't read
-   the diagnostics** (Llama loops on tool output, Qwen ignores
-   `tool_calls` and writes raw `<tools>` text).
+2. **Adding tools to an open-weights agent often DEGRADES behaviour
+   on knowledge questions.** None of the 5 models we tested reaches
+   60% discipline on the D1-D5 measurement. With tools in the prompt,
+   every model over-reaches — pattern-matching on "tools present"
+   before considering "is this a knowledge question". The
+   system-prompt instruction "never answer from training knowledge for
+   live data" is structurally insufficient. Cost compounds: when the
+   model reaches for a tool spuriously it usually emits an empty
+   content field, so you pay the tool-call tokens AND get no answer
+   back. (Specifically: Granite, Hermes, Llama all empty-out on D1
+   composable; Llama empty-outs on every discipline query in both
+   modes.)
+
+3. **Mode preference inverts across models — we have a hypothesis but
+   no validated rule.** Granite + classic is most efficient on chains
+   (7 vs 9 rounds, -30% tokens, same correctness). Gemma 4 +
+   composable is most efficient on the same chains (-50% tokens, 2-3/3
+   vs 2/3 with classic stuck in a loop on Q3). The plausible axis is
+   "deliberate reasoning step before tool call" (Gemma 4 emits a
+   `reasoning` field) vs "instruct directly" (Granite/Hermes/Llama),
+   but size is **confounded** with reasoning here — Gemma 4 is also
+   8× larger than Granite. Disambiguating would need either a large
+   no-reasoning model (Llama 3.1 70B Instruct) or a small reasoning
+   model (DeepSeek-R1-Distill). Neither has been tested in this repo.
+
+   Claims about smart-bash specifically "amplifying" any model are
+   **not yet supported** by data — the ablation isolating
+   classic+smart from classic+raw has not been run. That experiment
+   is the most direct way to attribute observed gains to either the
+   schema-gateway shape of classic or the enriched observation contract
+   of smart-bash.
 
 ### Rescuing Hermes via per-model skill tuning
 
@@ -754,26 +802,65 @@ real architectural finding, not a quirk.
 
 ### Recommendation matrix (read with hedges)
 
-> **Sample size caveat**: every cell below is grounded in 3 queries on
-> 1 model (or the 5-query discipline measurement above where
-> applicable). Treat the matrix as **directional hypotheses**, not
-> validated recommendations. A wider suite (more queries, more models,
-> more diversity in skill mix) would either solidify or flip several rows.
+> **Sample size caveat (read this first)**: the chain-correctness numbers
+> in this matrix come from **3 queries** (Q1-Q3 in `client/eval-suite.ts`,
+> selectable via `SUITE=basic`). The discipline numbers come from a
+> separate **5 queries** (D1-D5, selectable via `SUITE=discipline`).
+> The remaining 12 queries in the full 20-query suite (chain-multi,
+> error, ambiguous buckets) have **not** been run against all 5 models —
+> they require `CF_API_TOKEN` and a live tool-execution path the eval
+> harness drives. The cells below are **directional observations on a
+> small sample**, not validated recommendations.
 
-| Model class | Empirically tested? | Recommended mode (hypothesis) | Why we think so |
-|---|:---:|---|---|
-| Tool-tuned small (Granite 4.0 H Micro, $0.017/M in) | ✅ 6/6 | **classic primary** | Only model in our suite that converged on every query. JSONSchema acts as safety net. |
-| Older 7B instruct (Hermes 2 Pro) | ✅ 1-3/6 → 5+/6 | classic + per-model `model_overrides` block | Without tuning, invents optional args + gives up. With tuning, recovers. |
-| Mid-size open-weights (Llama 3.1 8B) | ✅ 0-1/6 + 0/5 discipline | **not recommended** without tuning | Loops on tool output, reaches for unavailable commands. Discipline measurement: 0% — never resists calling a tool. |
-| Reasoning mid-tier (Gemma 4 26B-a4b) | ✅ 4-5/6 + **3/5 classic discipline** | **classic — best discipline of the five** | Most likely of the open-weights to answer correctly without spurious tool calls (60% on classic discipline, 40% on composable). Watch for tokenization loops on chains. |
-| Coder mid-tier (Qwen 2.5 Coder 32B) | ✅ 3-4/6 + 2/5 discipline | composable for code-shaped queries; classic for chains | Hallucinates `<tools>` markup as text on chains; discipline measurement is competitive (40% — answers math + spelling without reaching for tool). |
-| Frontier (Claude, GPT-4o, *not tested in this repo*) | ❌ untested | composable (received wisdom) | Reliable bash composition + fewer tokens *should* favour composable, but we have no data here. |
+> **Tuning asymmetry caveat**: only Hermes has `model_overrides` defined
+> in the registry today (`ip-info` and `url2md`). For Hermes, both
+> composable and classic modes ran with the same tuning applied —
+> "classic + tuning vs composable + tuning" is the actual comparison
+> behind that row, not "classic + tuning vs composable raw". For the
+> other four models, both modes ran without per-model tuning. The
+> matrix language has been corrected accordingly.
 
-**Cost-aware conclusion**: among the models we benchmarked,
-**Granite 4.0 H Micro + classic MCP + smart-bash contract** has the
-strongest cost / correctness trade-off (~$0.000016 per query vs Qwen at
-~$0.000442 for the same correct answer). Whether this generalizes
-beyond our 3 queries is an open question worth more benchmarking.
+> **Confound caveat**: the model that did best on chain composition
+> (Gemma 4, 26B with reasoning field) is also the **largest** model in
+> our suite. We cannot from this data attribute Gemma's composable
+> success to "reasoning capability" vs "raw scale". Disambiguating
+> would need either a large no-reasoning model (Llama 3.1 70B Instruct)
+> or a small reasoning model (DeepSeek-R1-Distill-Qwen-7B). Neither is
+> in the current Workers AI catalog, so the question stays open.
+
+| Model class | Tested with | Observation | Caveat |
+|---|---|---|---|
+| Tool-tuned small (**Granite 4.0 H Micro**, 3.4B, $0.017/M in) | Q1-Q3 chains + D1-D5 discipline (no per-model tuning) | **Classic wins on chains** (7 vs 9 rounds, 2,651 vs 3,779 tokens, 3/3 both modes). Discipline 1/5 composable, 2/5 classic. JSONSchema safety net helps when chains compose. | Only model in suite that converged on every chain query. Generalisation to other small instruct models untested. |
+| Older 7B instruct (**Hermes 2 Pro**, beta) | Q1-Q3 chains + D1-D5 discipline (with `model_overrides` applied to BOTH modes) | Without tuning both modes fail (1/3). With tuning both reach 3/3 — tuning rescued **both** modes, not classic specifically. Discipline 0/5 in either mode. | Overrides are applied to both modes (nominally symmetric), but their *effect* may differ by mode — the tuning rewrites field descriptions and removes optional args, which is information classic mode reads from the JSONSchema directly while composable mode sees only via `tool_schema`. We have not measured "with-tuning composable vs with-tuning classic" head-to-head; we only know both reach 3/3. Token counts are estimates (Hermes beta returns zero usage). |
+| Mid-size instruct (**Llama 3.1 8B fp8**, $0.15/M in) | Q1-Q3 chains (aggregated only) + D1-D5 discipline (no per-model tuning) | Aggregated chain correctness 1/3 composable, 0/3 classic (model loops on tool output in classic, gets lucky in composable by skipping). Discipline 0/5 either mode — never resists tool. | **Per-query detail pending** — only aggregated correctness exists in the cross-model takeaway above, not the rounds/tokens breakdown the other models have. The matrix recommendation cell is empty until that's measured. |
+| Reasoning mid-tier (**Gemma 4 26B-a4b-it**, $0.10/M in) | Q1-Q3 chains + D1-D5 discipline (no per-model tuning) | **Composable wins on chains for this model** — 6 vs 8+ rounds, 1,461 vs 2,975+ tokens, 2-3/3 vs 2/3 (classic got stuck in loop on Q3). Discipline inverts: 2/5 composable, 3/5 classic. | This is the row where the previous matrix said "classic primary" but the data say composable. The trade-off is **chain efficiency vs discipline**, not a single best mode. |
+| Coder mid-tier (**Qwen 2.5 Coder 32B**, $0.66/M in) | Q1-Q3 chains (aggregated only) + D1-D5 discipline (no per-model tuning) | Aggregated chain correctness 1/3 composable, 2/3 classic. Discipline 2/5 both modes. Hallucinated `<tools>{...}` as raw text on chains BEFORE the Qwen `response: {name, arguments}` shape was normalised in `client/model-adapter.ts` (added in commit [`efa209b`](https://github.com/MauricioPerera/agentic-tools-poc/commit/efa209b), 2026-04-26). Chain correctness has not been re-measured against the post-fix adapter. | **Per-query detail + post-fix re-measurement pending against ≥`efa209b`.** The 2/3 classic correctness number predates that commit and may improve. |
+| Frontier (Claude, GPT-4o) | ❌ untested | No data. Received-wisdom expectation: composable should favour these, but we have not verified. | Pure speculation cell — would be removed in a stricter framing. |
+
+**Pattern in n=2 instruct vs n=1 reasoning** (Granite + Hermes go better
+in classic; Gemma 4 goes better in composable): **plausibly suggests**
+that the relevant axis is "model emits a deliberate reasoning step
+before tool call" vs "model goes straight to tool emission". But size
+is **confounded** with reasoning in this dataset (see caveat above) —
+so this pattern is a **hypothesis to test**, not a recommendation to
+ship. The honest summary right now is:
+
+> *On the 3 chain queries we measured, Granite + classic + smart-bash is
+> the best cost/correctness combination ($0.000016/query). Gemma 4 +
+> composable + smart-bash ran more efficiently on the same chains
+> (-50% tokens) but at higher absolute cost due to Gemma's per-token
+> price. Beyond these two data points, we don't know.*
+
+Three concrete ways to strengthen any row above:
+
+1. Run `SUITE=full` (the 20-query corpus in `client/eval-suite.ts`)
+   against each model — fills the chain-multi, error, and ambiguous
+   buckets that today have no per-model data.
+2. Add `model_overrides` blocks for Llama 3.1 8B and Gemma 4 (today
+   only Hermes has them) and re-measure to see if the gap closes.
+3. Run an ablation isolating smart-bash's contribution from the
+   schema-gateway: classic+raw vs classic+smart in at least 2 models
+   (currently 0).
 
 
 
