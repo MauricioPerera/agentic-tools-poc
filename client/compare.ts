@@ -27,6 +27,12 @@ const ACCOUNT = process.env.CF_ACCOUNT_ID;
 const TOKEN   = process.env.CF_API_TOKEN;
 const MODEL   = process.env.MODEL ?? process.env.GRANITE_MODEL ?? '@cf/ibm-granite/granite-4.0-h-micro';
 const MAX_ROUNDS = Number(process.env.MAX_ROUNDS ?? 5);
+// Smart-bash ablation: SMART=0 disables observation enrichment in BOTH
+// modes. Default is on — same as historical behaviour for composable;
+// classic mode previously didn't use it, so SMART=1 changes its baseline
+// (this is intentional — we want to ablate enrichment, not preserve a
+// historical accident).
+const USE_SMART_BASH = process.env.SMART !== '0';
 
 if (!ACCOUNT || !TOKEN) {
   console.error('Missing CF_ACCOUNT_ID or CF_API_TOKEN env.');
@@ -50,6 +56,7 @@ const bash = new Bash({ customCommands: commands as never });
 const tuned = JSON.stringify(manifest) !== JSON.stringify(rawManifest);
 const MODEL_PRICING = getPricing(MODEL);
 console.log(`Model: ${MODEL}`);
+console.log(`Smart-bash: ${USE_SMART_BASH ? 'ON (observation enrichment via makeObservation)' : 'OFF (raw {stdout, stderr, exitCode} — ablation baseline)'}`);
 console.log(`Skill tuning: ${tuned ? 'ON (model-specific overrides applied)' : 'OFF (default skill shape)'}`);
 if (promptFragments.length) {
   console.log(`Prompt fragments: ${promptFragments.length} model-specific instruction(s) injected`);
@@ -99,6 +106,7 @@ for (const q of QUERIES) {
     modelPricing: MODEL_PRICING,
     maxRounds: MAX_ROUNDS,
     promptFragments,
+    useSmartBash: USE_SMART_BASH,
     trace: (msg: string) => console.log(`  ${msg}`),
   };
   results.push({

@@ -57,6 +57,17 @@ export interface AgentOptions {
   /** Optional logger for "[composable] bash → cmd" / "[classic] tool args"
    *  trace lines. Defaults to a no-op so library use is silent. */
   trace?: (msg: string) => void;
+  /** When false, the tool observation passed back to the model is the raw
+   *  bash result `{stdout, stderr, exitCode}` — no smart-bash enrichment
+   *  (no tools_referenced, no schema_check, no diagnostics). Default true.
+   *
+   *  Exists for the smart-bash ablation: comparing classic+raw vs
+   *  classic+smart isolates whether observed gains come from the
+   *  schema-gateway shape of classic mode or from the enriched
+   *  observation contract. The README's "smart-bash amplifies …" claim
+   *  was unsupported until this ablation was runnable; SMART=0 in
+   *  compare.ts wires through to this flag. */
+  useSmartBash?: boolean;
 }
 
 export type RunOutcome = 'via_tool' | 'without_tool' | 'wrong_with_tool' | 'wrong_no_tool';
@@ -138,22 +149,36 @@ export async function runComposable(
     },
   ];
 
+  const useSmart = opts.useSmartBash !== false;
+
   return runLoop(messages, tools, query, opts, async (tc) => {
     const args = parseToolCallArguments(tc.function.arguments);
     const cmd = String(args['command'] ?? '');
-    opts.trace?.(`[composable] bash → ${cmd}`);
+    opts.trace?.(`[composable${useSmart ? '' : '/raw'}] bash → ${cmd}`);
     const result = await bash.exec(cmd);
+    const lastStage = lastPipelineStage(cmd);
+    const lastSlug = manifest.tools.find(
+      (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
+    )?.slug ?? null;
+
+    if (!useSmart) {
+      // Raw mode: bare bash result. V5 wrap still applies — that's a
+      // safety / data-marker concern orthogonal to smart-bash's
+      // observation enrichment.
+      let stdout = (result.stdout ?? '').replace(/\n+$/, '');
+      const stderr = (result.stderr ?? '').replace(/\n+$/, '');
+      if (lastSlug && stdout) {
+        const cap = outputCapForSkill(lastSlug, manifest.tools);
+        stdout = wrapUntrustedOutput(stdout, { slug: lastSlug, outputCap: cap });
+      }
+      return { stdout, stderr, exitCode: result.exitCode ?? 0 };
+    }
+
     const obs = makeObservation(
       cmd,
       result as { stdout: string; stderr: string; exitCode: number },
       manifest,
     );
-    // V5 strawman: if the pipeline ends in a registry tool, the stdout is
-    // untrusted skill output. Wrap before it lands in the LLM context.
-    const lastStage = lastPipelineStage(cmd);
-    const lastSlug = manifest.tools.find(
-      (t) => lastStage === t.slug || lastStage?.startsWith(t.slug + ' '),
-    )?.slug ?? null;
     if (lastSlug && obs.stdout) {
       const cap = outputCapForSkill(lastSlug, manifest.tools);
       obs.stdout = wrapUntrustedOutput(obs.stdout, { slug: lastSlug, outputCap: cap });
@@ -183,18 +208,40 @@ export async function runClassic(
     { role: 'user', content: query.text },
   ];
 
+  const useSmart = opts.useSmartBash !== false;
+
   return runLoop(messages, toolDefs, query, opts, async (tc) => {
     const tool = manifest.tools.find((t) => t.slug === tc.function.name);
     if (!tool) return { error: `unknown tool: ${tc.function.name}` };
     const args = parseToolCallArguments(tc.function.arguments);
     const cmd = `${tool.slug} ${argvToShellCommand(inputToArgv(args))}`.trim();
-    opts.trace?.(`[classic] ${tc.function.name} ${JSON.stringify(args)}`);
+    opts.trace?.(`[classic${useSmart ? '' : '/raw'}] ${tc.function.name} ${JSON.stringify(args)}`);
     const result = await bash.exec(cmd);
-    let stdout = (result.stdout ?? '').trim();
-    if (stdout) {
-      stdout = wrapUntrustedOutput(stdout, { slug: tool.slug, outputCap: tool.outputCap });
+
+    if (!useSmart) {
+      // Raw mode: bare bash result. V5 wrap still applied (data marker
+      // is orthogonal to enrichment). This is the pre-existing classic
+      // behaviour before the ablation flag landed — kept as baseline.
+      let stdout = (result.stdout ?? '').trim();
+      if (stdout) {
+        stdout = wrapUntrustedOutput(stdout, { slug: tool.slug, outputCap: tool.outputCap });
+      }
+      return { stdout, stderr: (result.stderr ?? '').trim(), exitCode: result.exitCode };
     }
-    return { stdout, stderr: (result.stderr ?? '').trim(), exitCode: result.exitCode };
+
+    // Smart-bash enrichment: every classic call lands directly on a
+    // registry skill, so makeObservation attaches schema_check,
+    // tools_referenced, jq_paths, and diagnostics the same way it does
+    // for composable. The V5 wrap is applied on top.
+    const obs = makeObservation(
+      cmd,
+      result as { stdout: string; stderr: string; exitCode: number },
+      manifest,
+    );
+    if (obs.stdout) {
+      obs.stdout = wrapUntrustedOutput(obs.stdout, { slug: tool.slug, outputCap: tool.outputCap });
+    }
+    return obs;
   });
 }
 

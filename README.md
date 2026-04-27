@@ -518,6 +518,17 @@ not throughput-bound). Run all five sequentially in under an hour.
 
 ### Results — IBM Granite 4.0 H Micro (3.4B)
 
+> **Two snapshots below.** The first is the legacy measurement from
+> the original POC (composable mode included an upfront skill list in
+> the system prompt; classic mode used raw observations, no smart-bash
+> enrichment). The second is the current measurement after two
+> intervening commits: composable now uses filtered discovery (no
+> upfront list — see "How discovery works" above), and classic now
+> includes smart-bash enrichment by default. The shift in the numbers
+> is the cost of those architectural changes for THIS model.
+
+**Legacy snapshot** (commit before `c6dfd69`, composable with upfront list):
+
 | Query | Mode | Rounds | Tokens | Correct |
 |---|---|---:|---:|:---:|
 | Q1 — *uppercase 'agentic tools poc'* | composable | 2 | 677 | ✅ AGENTIC TOOLS POC |
@@ -526,8 +537,34 @@ not throughput-bound). Run all five sequentially in under an hour.
 | Q2 | classic | 2 | 667 | ✅ MX |
 | Q3 — *country code uppercased w/ prefix* | composable | 5 | 2440 | ✅ YOU ARE IN: MX |
 | Q3 | classic | 3 | 1229 | ✅ YOU ARE IN: MX |
-| **Totals** | composable | **9** | **3779** | **3/3** |
-| **Totals** | classic | **7** | **2651** | **3/3** |
+| **Totals (legacy)** | composable | **9** | **3,779** | **3/3** |
+| **Totals (legacy)** | classic | **7** | **2,651** | **3/3** |
+
+**Current snapshot** (commit `c6dfd69` and after — discovery prompt + smart-bash in classic):
+
+| Query | Mode | Rounds | Tokens | Correct |
+|---|---|---:|---:|:---:|
+| Q1 — uppercase | composable | 1 | 486 | ✗ wrong_no_tool — emitted `AGENTIC TOOLS PO` (truncated, no tool call) |
+| Q1 | classic | 2 | 2,024 | ✅ AGENTIC TOOLS POC |
+| Q2 — country | composable | 5 | 3,898 | ✅ US (hallucinated — used `curl restcountries.com` instead of discovering ip-info) |
+| Q2 | classic | 2 | 2,032 | ✅ MX |
+| Q3 — chained | composable | 4 | 2,940 | ✅ YOU ARE IN: USA (hallucinated again, lucky regex match) |
+| Q3 | classic | 3 | 3,363 | ✅ YOU ARE IN: MX |
+| **Totals (current, smart=on)** | composable | **10** | **7,324** | **2/3** (one hallucinated answer) |
+| **Totals (current, smart=on)** | classic | **7** | **7,419** | **3/3** |
+| **Totals (current, smart=off)** | classic | **7** | **6,995** | **3/3** |
+
+**What changed and why it matters**: removing the upfront skill list
+from the composable system prompt (commit `c6dfd69`, the architectural
+fix that made discovery genuine instead of theatre) **broke composable
+for Granite**. Granite cannot productively use `bash list_skills` /
+`bash tool_schema` to discover — it improvises with `curl
+restcountries.com` and hallucinates answers that pass the regex by
+luck. **Discovery requires a model class Granite isn't in.** Classic
+mode still works: 3/3 correct, both with and without smart-bash, with
+smart-bash adding ~6% tokens for no measurable benefit. The old
+"composable competitive with classic for Granite" claim depended on
+the upfront-list crutch.
 
 ### Results — Google Gemma 4 26B-a4b-it ($0.10/M in, $0.30/M out)
 
@@ -678,7 +715,8 @@ contained claims contradicted by the discipline-bucket table below.)
 
 3. **Mode preference inverts across models — we have a hypothesis but
    no validated rule.** Granite + classic is most efficient on chains
-   (7 vs 9 rounds, -30% tokens, same correctness). Gemma 4 +
+   (7 vs 9 rounds, -30% tokens, same correctness on the legacy
+   composable that included an upfront skill list). Gemma 4 +
    composable is most efficient on the same chains (-50% tokens, 2-3/3
    vs 2/3 with classic stuck in a loop on Q3). The plausible axis is
    "deliberate reasoning step before tool call" (Gemma 4 emits a
@@ -688,12 +726,37 @@ contained claims contradicted by the discipline-bucket table below.)
    no-reasoning model (Llama 3.1 70B Instruct) or a small reasoning
    model (DeepSeek-R1-Distill). Neither has been tested in this repo.
 
-   Claims about smart-bash specifically "amplifying" any model are
-   **not yet supported** by data — the ablation isolating
-   classic+smart from classic+raw has not been run. That experiment
-   is the most direct way to attribute observed gains to either the
-   schema-gateway shape of classic or the enriched observation contract
-   of smart-bash.
+4. **Smart-bash observation enrichment shows no measurable benefit
+   in classic mode for the two models we ablated.** Running
+   `SMART=0 SUITE=basic` against Granite and Llama 3.1 8B (classic
+   mode), 3 queries, smart-bash on vs off:
+
+   | Model | Mode | Rounds | Tokens | Cost | Correct |
+   |---|---|---:|---:|---:|---:|
+   | Granite | classic + smart | 7 | 7,419 | $0.000140 | 3/3 |
+   | Granite | classic + **raw** | 7 | **6,995** | **$0.000132** | 3/3 |
+   | Llama 3.1 8B | classic + smart | 8 | 7,013 | $0.0011 | 1/3 |
+   | Llama 3.1 8B | classic + **raw** | **6** | **4,337** | **$0.000685** | 1/3 |
+
+   For Granite the difference is within noise (~6%, same 3/3
+   correctness). **For Llama, raw is strictly better** — 25% fewer
+   rounds and 38% fewer tokens with the same (poor) correctness.
+   Smart-bash's enriched observation actually *costs* Llama tokens
+   without converting to better outcomes.
+
+   This contradicts the previous version of this finding — which
+   claimed smart-bash "amplifies" certain models — and the contradiction
+   is the point: that claim was not measured until now. The ablation
+   covers n=2 models on the basic suite; running it on Hermes, Gemma 4,
+   and Qwen would either solidify "smart-bash is neutral-to-negative
+   in classic" or surface a class of models where the enrichment helps
+   (most likely Hermes, where the `model_overrides` machinery already
+   suggests this model class needs richer hints).
+
+   The enrichment may still help in **composable mode** — that's a
+   different experiment (`SMART=0 MODE=composable`) we haven't run.
+   The classic-mode result alone is enough to retire the previous
+   blanket claim.
 
 ### Rescuing Hermes via per-model skill tuning
 
